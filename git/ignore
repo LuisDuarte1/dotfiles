@@ -1,0 +1,4 @@
+# pi-tldraw saves canvases and exports inside whatever project pi runs in;
+# they are per-user scratch, never part of the repo.
+.pi/tldraw-canvases/
+.pi/tldraw-exports/

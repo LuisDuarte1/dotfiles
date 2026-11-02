@@ -1,0 +1,22 @@
+diff -urN orig/extensions/pi-autoresearch/index.ts new/extensions/pi-autoresearch/index.ts
+--- orig/extensions/pi-autoresearch/index.ts	2026-09-22 22:51:40.628587622 +0100
++++ new/extensions/pi-autoresearch/index.ts	2026-09-22 22:51:40.632936703 +0100
+@@ -1186,7 +1186,7 @@
+     runtime.autoresearchMode && hasRunExperimentsThisSession(runtime);
+ 
+   const shouldAutoResumeAfterCompact = (runtime: AutoresearchRuntime): boolean =>
+-    runtime.autoresearchMode;
++    runtime.autoresearchMode && hasRunExperimentsThisSession(runtime);
+ 
+   const notifyAutoResumeLimitReached = (ctx: ExtensionContext, reason?: string | null): void => {
+     ctx.ui.notify(reason ?? `Autoresearch auto-resume limit reached`, "info");
+@@ -1215,7 +1215,8 @@
+     ctx: ExtensionContext,
+     event: SessionBeforeCompactEvent,
+   ) => {
+-    if (!getRuntime(ctx).autoresearchMode) return undefined;
++    const runtime = getRuntime(ctx);
++    if (!runtime.autoresearchMode || !hasRunExperimentsThisSession(runtime)) return undefined;
+     return {
+       compaction: {
+         summary: buildAutoresearchCompactionSummary(

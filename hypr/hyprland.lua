@@ -1,0 +1,290 @@
+local home = assert(os.getenv("HOME"), "HOME must be set")
+local configHome = os.getenv("XDG_CONFIG_HOME") or (home .. "/.config")
+package.path = configHome .. "/hypr/?.lua;" .. package.path
+local mod = "SUPER"
+local hy3 = hl.plugin.hy3
+
+local function bindGlobal(keys, dispatcher, options)
+    options = options or {}
+    options.dont_inhibit = true
+    return hl.bind(keys, dispatcher, options)
+end
+
+local monitorsLoaded = pcall(require, "monitors")
+pcall(require, "workspaces")
+
+if not monitorsLoaded then
+    hl.monitor({
+        output = "DP-3",
+        mode = "3840x2160@60",
+        position = "0x0",
+        scale = 1.5,
+    })
+
+    hl.monitor({
+        output = "eDP-1",
+        mode = "3840x2400@60",
+        position = "0x1440",
+        scale = 2,
+    })
+
+    hl.monitor({
+        output = "",
+        mode = "preferred",
+        position = "auto",
+        scale = "auto",
+    })
+end
+
+hl.env("XCURSOR_SIZE", "24")
+hl.env("HYPRCURSOR_SIZE", "24")
+
+hl.config({
+    general = {
+        gaps_in = 5,
+        gaps_out = 20,
+        border_size = 2,
+        resize_on_border = true,
+        layout = hy3 ~= nil and "hy3" or "dwindle",
+        col = {
+            active_border = {
+                colors = { "rgba(33ccffee)", "rgba(00ff99ee)" },
+                angle = 45,
+            },
+            inactive_border = "rgba(595959aa)",
+        },
+    },
+    decoration = {
+        rounding = 10,
+        rounding_power = 2,
+        active_opacity = 1.0,
+        inactive_opacity = 1.0,
+        shadow = {
+            enabled = true,
+            range = 4,
+            render_power = 3,
+            color = "rgba(1a1a1aee)",
+        },
+        blur = {
+            enabled = true,
+            size = 3,
+            passes = 1,
+            vibrancy = 0.1696,
+        },
+    },
+    animations = {
+        enabled = true,
+    },
+    binds = {
+        disable_keybind_grabbing = true,
+    },
+    input = {
+        kb_rules = "evdev",
+        kb_model = "pc105",
+        kb_layout = "pt",
+        kb_variant = "",
+        kb_options = "",
+        kb_file = configHome .. "/hypr/keymap.xkb",
+        resolve_binds_by_sym = true,
+        follow_mouse = 1,
+        sensitivity = 0,
+        natural_scroll = false,
+        scroll_factor = 1.0,
+        touchpad = {
+            natural_scroll = false,
+            scroll_factor = 1.0,
+        },
+    },
+    dwindle = {
+        preserve_split = true,
+    },
+    misc = {
+        disable_hyprland_logo = false,
+        disable_splash_rendering = false,
+        force_default_wallpaper = -1,
+    },
+})
+
+-- This device reports inverted scroll polarity; true produces conventional scrolling.
+-- Pin both exposed nodes so reconnects cannot restore the broken direction.
+for _, deviceName in ipairs({
+    "ven_27c6:00-27c6:0f60-mouse",
+    "ven_27c6:00-27c6:0f60-touchpad",
+}) do
+    hl.device({
+        name = deviceName,
+        natural_scroll = true,
+        scroll_factor = 1.0,
+    })
+end
+
+hl.curve("easeOutQuint", { type = "bezier", points = { { 0.23, 1 }, { 0.32, 1 } } })
+hl.curve("easeInOutCubic", { type = "bezier", points = { { 0.65, 0.05 }, { 0.36, 1 } } })
+hl.curve("linear", { type = "bezier", points = { { 0, 0 }, { 1, 1 } } })
+hl.curve("almostLinear", { type = "bezier", points = { { 0.5, 0.5 }, { 0.75, 1 } } })
+hl.curve("quick", { type = "bezier", points = { { 0.15, 0 }, { 0.1, 1 } } })
+hl.curve("easy", { type = "spring", mass = 1, stiffness = 71.2633, dampening = 15.8273644 })
+
+hl.animation({ leaf = "global", enabled = true, speed = 10, bezier = "default" })
+hl.animation({ leaf = "border", enabled = true, speed = 5.39, bezier = "easeOutQuint" })
+hl.animation({ leaf = "windows", enabled = false })
+hl.animation({ leaf = "windowsIn", enabled = false })
+hl.animation({ leaf = "windowsOut", enabled = false })
+hl.animation({ leaf = "fadeIn", enabled = false })
+hl.animation({ leaf = "fadeOut", enabled = false })
+hl.animation({ leaf = "fade", enabled = false })
+hl.animation({ leaf = "layers", enabled = true, speed = 3.81, bezier = "easeOutQuint" })
+hl.animation({ leaf = "layersIn", enabled = true, speed = 4, bezier = "easeOutQuint", style = "fade" })
+hl.animation({ leaf = "layersOut", enabled = true, speed = 1.5, bezier = "linear", style = "fade" })
+hl.animation({ leaf = "fadeLayersIn", enabled = true, speed = 1.79, bezier = "almostLinear" })
+hl.animation({ leaf = "fadeLayersOut", enabled = true, speed = 1.39, bezier = "almostLinear" })
+hl.animation({ leaf = "workspaces", enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" })
+hl.animation({ leaf = "workspacesIn", enabled = true, speed = 1.21, bezier = "almostLinear", style = "fade" })
+hl.animation({ leaf = "workspacesOut", enabled = true, speed = 1.94, bezier = "almostLinear", style = "fade" })
+hl.animation({ leaf = "zoomFactor", enabled = true, speed = 7, bezier = "quick" })
+
+if hy3 ~= nil then
+    hl.config({
+        plugin = {
+            hy3 = {
+                node_collapse_policy = 2,
+                group_inset = 10,
+                tab_first_window = false,
+                autotile = {
+                    enable = true,
+                    ephemeral_groups = true,
+                    trigger_width = 0,
+                    trigger_height = 0,
+                    workspaces = "all",
+                },
+            },
+        },
+    })
+end
+
+-- Chrome PiP titles lack the " - Google Chrome" suffix: video PiP is a fixed string,
+-- Meet document PiP is "Meet - <xxx-yyyy-zzz>". Pin so calls follow across workspaces.
+local function chromePipRule(name, title, size)
+    hl.window_rule({
+        name = name,
+        match = { class = "^google-chrome$", title = title },
+        float = true,
+        pin = true,
+        no_initial_focus = true,
+        size = size,
+        move = "monitor_w-window_w-20 monitor_h-window_h-20",
+    })
+end
+
+chromePipRule("chrome-pip-video", "^Picture[- ]in[- ][Pp]icture$", "480 270")
+chromePipRule("chrome-pip-meet", "^Meet - [a-z]{3}-[a-z]{4}-[a-z]{3}$", "292 431")
+
+-- The xdph share picker maps with an empty app-id, so match its title to keep
+-- the screenshare dialog from being tiled by hy3.
+hl.window_rule({
+    name = "share-picker-dialog",
+    match = { title = "^Select what to share$" },
+    float = true,
+    center = true,
+})
+
+local screenshotCommand = [[area=$(slurp) || exit; dir="$HOME/Pictures/Screenshots"; mkdir -p "$dir"; file="$dir/$(date +%Y-%m-%d_%H-%M-%S).png"; grim -g "$area" "$file"; wl-copy < "$file"]]
+
+bindGlobal(mod .. " + Return", hl.dsp.exec_cmd("kitty"))
+bindGlobal(mod .. " + D", hl.dsp.exec_cmd("rofi -show drun"))
+bindGlobal("Print", hl.dsp.exec_cmd(screenshotCommand))
+bindGlobal(mod .. " + F", hl.dsp.window.fullscreen())
+bindGlobal(mod .. " + SHIFT + space", hl.dsp.window.float({ action = "toggle" }))
+bindGlobal(mod .. " + CTRL + L", hl.dsp.exec_cmd("/usr/bin/swaylock -f"))
+bindGlobal(mod .. " + SHIFT + C", hl.dsp.exec_cmd("hyprctl reload"))
+bindGlobal(mod .. " + SHIFT + E", hl.dsp.exit())
+bindGlobal(mod .. " + mouse:272", hl.dsp.window.drag(), { mouse = true })
+bindGlobal(mod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
+
+bindGlobal("XF86AudioRaiseVolume", hl.dsp.exec_cmd("pactl set-sink-volume @DEFAULT_SINK@ +10%"), { locked = true, repeating = true })
+bindGlobal("XF86AudioLowerVolume", hl.dsp.exec_cmd("pactl set-sink-volume @DEFAULT_SINK@ -10%"), { locked = true, repeating = true })
+bindGlobal("XF86AudioMute", hl.dsp.exec_cmd("pactl set-sink-mute @DEFAULT_SINK@ toggle"), { locked = true })
+bindGlobal("XF86AudioMicMute", hl.dsp.exec_cmd("pactl set-source-mute @DEFAULT_SOURCE@ toggle"), { locked = true })
+
+local workspaceBindings = {
+    { keycode = "code:10", workspace = 1 },
+    { keycode = "code:11", workspace = 2 },
+    { keycode = "code:12", workspace = 3 },
+    { keycode = "code:13", workspace = 4 },
+    { keycode = "code:14", workspace = 5 },
+    { keycode = "code:15", workspace = 6 },
+    { keycode = "code:16", workspace = 7 },
+    { keycode = "code:17", workspace = 8 },
+    { keycode = "code:18", workspace = 9 },
+    { keycode = "code:19", workspace = 10 },
+}
+
+for _, binding in ipairs(workspaceBindings) do
+    bindGlobal(mod .. " + " .. binding.keycode, hl.dsp.focus({ workspace = binding.workspace }))
+    if hy3 ~= nil then
+        bindGlobal(mod .. " + SHIFT + " .. binding.keycode, hy3.move_to_workspace(tostring(binding.workspace)))
+    else
+        bindGlobal(mod .. " + SHIFT + " .. binding.keycode, hl.dsp.window.move({ workspace = binding.workspace, follow = false }))
+    end
+end
+
+bindGlobal(mod .. " + CTRL + SHIFT + greater", hl.dsp.workspace.move({ monitor = "+1" }))
+bindGlobal(mod .. " + CTRL + less", hl.dsp.workspace.move({ monitor = "-1" }))
+
+if hy3 ~= nil then
+    local directions = {
+        { key = "J", direction = "left" },
+        { key = "K", direction = "down" },
+        { key = "L", direction = "up" },
+        { key = "ccedilla", direction = "right" },
+        { key = "left", direction = "left" },
+        { key = "down", direction = "down" },
+        { key = "up", direction = "up" },
+        { key = "right", direction = "right" },
+    }
+
+    for _, binding in ipairs(directions) do
+        bindGlobal(mod .. " + " .. binding.key, hy3.move_focus(binding.direction, { warp = false }))
+        bindGlobal(mod .. " + SHIFT + " .. binding.key, hy3.move_window(binding.direction, { once = true }))
+    end
+
+    bindGlobal(mod .. " + SHIFT + Q", hy3.kill_active())
+    bindGlobal(mod .. " + H", hy3.make_group("h"))
+    bindGlobal(mod .. " + V", hy3.make_group("v"))
+    bindGlobal(mod .. " + E", hy3.change_group("opposite"))
+    bindGlobal(mod .. " + W", hy3.change_group("tab"))
+    bindGlobal(mod .. " + SHIFT + W", hy3.change_group("untab"))
+    bindGlobal(mod .. " + A", hy3.change_focus("raise"))
+    bindGlobal(mod .. " + space", hy3.toggle_focus_layer({ warp = false }))
+    bindGlobal(mod .. " + CTRL + J", hy3.focus_tab({ direction = "left", wrap = true }))
+    bindGlobal(mod .. " + CTRL + ccedilla", hy3.focus_tab({ direction = "right", wrap = true }))
+else
+    bindGlobal(mod .. " + SHIFT + Q", hl.dsp.window.close())
+end
+
+bindGlobal(mod .. " + R", hl.dsp.submap("resize"))
+
+hl.define_submap("resize", function()
+    local resizeBindings = {
+        { key = "J", x = -10, y = 0 },
+        { key = "K", x = 0, y = 10 },
+        { key = "L", x = 0, y = -10 },
+        { key = "ccedilla", x = 10, y = 0 },
+        { key = "left", x = -10, y = 0 },
+        { key = "down", x = 0, y = 10 },
+        { key = "up", x = 0, y = -10 },
+        { key = "right", x = 10, y = 0 },
+    }
+
+    for _, binding in ipairs(resizeBindings) do
+        bindGlobal(binding.key, hl.dsp.window.resize({
+            x = binding.x,
+            y = binding.y,
+            relative = true,
+        }), { repeating = true })
+    end
+
+    bindGlobal("Return", hl.dsp.submap("reset"))
+    bindGlobal("Escape", hl.dsp.submap("reset"))
+    bindGlobal(mod .. " + R", hl.dsp.submap("reset"))
+end)

@@ -1,0 +1,6 @@
+color=000000
+font=monospace
+indicator-radius=100
+indicator-thickness=8
+show-failed-attempts
+ignore-empty-password

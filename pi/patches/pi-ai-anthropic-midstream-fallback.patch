@@ -1,0 +1,59 @@
+Capture Anthropic's serving model when fallback happens after message_start.
+
+Upstream records event.message.model as output.responseModel, but only from the
+initial message_start. Fable can instead emit a fallback content block after
+producing signed thinking, so the stream carries Fable- and Opus-signed blocks
+while the finalized message stays labelled Fable. On the next turn Anthropic
+rejects the Opus block when Pi replays it as Fable. Final usage iterations are a
+second authoritative source when an intermediary omits the boundary block.
+
+Keep responseModel and usage pricing aligned with the latest serving model. The
+Fable extension then removes model-bound thinking from replay while preserving
+the fallback's text and tool calls.
+
+--- a/dist/api/anthropic-messages.js
++++ b/dist/api/anthropic-messages.js
+@@ -358,6 +358,14 @@
+             let client;
+             let isOAuth;
+             let usageModel = model;
++            const setResponseModel = (responseModel) => {
++                if (responseModel !== model.id)
++                    output.responseModel = responseModel;
++                const fallbackCost = responseModel === model.id
++                    ? undefined
++                    : model.compat?.allowedFallbackModels?.find((fallback) => fallback.provider === model.provider && fallback.model === responseModel)?.cost;
++                usageModel = fallbackCost ? { ...model, id: responseModel, cost: fallbackCost } : model;
++            };
+             let inputTransformations;
+             if (options?.client) {
+                 client = options.client;
+@@ -425,8 +433,9 @@
+                 }
+                 else if (event.type === "content_block_start") {
+                     if (event.content_block.type === "fallback") {
+-                        if (output.content.length > 0) {
+-                            throw new Error("Anthropic performed an unsupported mid-output model fallback");
++                        const fallbackModel = event.content_block.to?.model;
++                        if (fallbackModel) {
++                            setResponseModel(fallbackModel);
+                         }
+                         continue;
+                     }
+@@ -592,6 +601,16 @@
+                         if (thinkingTokens != null) {
+                             output.usage.reasoning = thinkingTokens;
+                         }
++                        const iterations = event.usage.iterations;
++                        if (Array.isArray(iterations)) {
++                            for (let i = iterations.length - 1; i >= 0; i--) {
++                                const iteration = iterations[i];
++                                if (iteration?.type === "fallback_message" && iteration.model) {
++                                    setResponseModel(iteration.model);
++                                    break;
++                                }
++                            }
++                        }
+                     }
+                     // Anthropic doesn't provide total_tokens, compute from components
+                     output.usage.totalTokens =

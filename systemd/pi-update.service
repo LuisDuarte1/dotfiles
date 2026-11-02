@@ -1,0 +1,14 @@
+[Unit]
+Description=Auto-update pi (coding-agent) to latest npm release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/pi-update
+Environment=PATH=%h/.nix-profile/bin:/nix/var/nix/profiles/default/bin:%h/.local/bin:/usr/bin:/bin
+Environment=DISPLAY=:1
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+
+# Allow waiting on the shared dotfiles-nix-update lock (up to 20min) + build.
+TimeoutStartSec=30min

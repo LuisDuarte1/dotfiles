@@ -1,0 +1,178 @@
+#!/bin/bash
+set -euo pipefail
+
+# validate-review-plan - Validate a code-review partition plan.
+# Used by /review-branch-code to enforce invariants on agent-proposed partitions.
+
+# The agent does the partitioning; this script only checks correctness
+# and prints actionable errors so the agent can revise the plan.
+
+# Usage: validate-review-plan --plan <path> [--base <ref>]
+# Checks coverage, no duplicates, per-partition file/line caps.
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info()    { echo -e "${BLUE}$*${NC}"; }
+success() { echo -e "${GREEN}$*${NC}"; }
+warn()    { echo -e "${YELLOW}$*${NC}"; }
+error()   { echo -e "${RED}Error: $*${NC}" >&2; }
+
+check_dependency() {
+    if ! command -v "$1" &>/dev/null; then
+        error "'$1' is not installed. Please install it first."
+        exit 2
+    fi
+}
+
+show_help() {
+    cat <<'EOF'
+Usage: validate-review-plan --plan <path> [--base <ref>]
+
+Validate a code-review partition plan against a git diff scope.
+
+The plan is JSON, of the form:
+  { "partitions": [
+      { "id": "P1", "name": "ml_classifier", "files": ["a/b.rs", ...] },
+      ...
+  ] }
+
+Checks performed:
+  - JSON shape: .partitions is a non-empty array
+  - Every partition has a non-empty .id and .name
+  - Partition ids are unique
+  - Every file in `git diff --name-only <base>...HEAD` appears in
+    exactly one partition (no missing, no extras, no duplicates)
+  - No partition exceeds MAX_FILES files (default 25)
+  - No partition exceeds MAX_LINES total line changes (default 10000)
+    Single-file partitions are exempt: one file cannot be split.
+
+Options:
+  --plan <path>     Path to the proposed plan JSON (required)
+  --base <ref>      Base ref for the diff (default: origin/main)
+  --help, -h        Show this help
+
+Environment:
+  MAX_FILES         Files-per-partition cap (default: 25)
+  MAX_LINES         Line-changes-per-partition cap (default: 10000)
+
+Exit codes:
+  0  Plan is valid
+  1  Plan is invalid (errors to stderr; JSON list written next to the
+                      plan as <plan-basename>.errors.json)
+  2  Usage error / missing dependency
+
+Examples:
+  validate-review-plan --plan "$RDIR/plan.json"
+  validate-review-plan --plan "$RDIR/plan.json" --base origin/master
+  MAX_FILES=15 MAX_LINES=5000 validate-review-plan --plan plan.json
+
+Note: the review prompt creates $RDIR via `mktemp -d /tmp/review-XXXXXX`
+so concurrent sessions get isolated plan + findings paths.
+EOF
+}
+
+PLAN=""
+BASE="origin/main"
+MAX_FILES="${MAX_FILES:-25}"
+MAX_LINES="${MAX_LINES:-10000}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --plan)    PLAN="$2"; shift 2 ;;
+        --base)    BASE="$2"; shift 2 ;;
+        --help|-h) show_help; exit 0 ;;
+        *)         error "Unknown option: $1"; show_help; exit 2 ;;
+    esac
+done
+
+if [[ -z "$PLAN" ]]; then
+    error "--plan is required"
+    show_help
+    exit 2
+fi
+if [[ ! -f "$PLAN" ]]; then
+    error "Plan file not found: $PLAN"
+    exit 2
+fi
+
+check_dependency jq
+check_dependency git
+
+# JSON shape check first — give the agent one clean error
+# instead of cryptic jq failures further down.
+if ! jq -e '.partitions | type == "array" and length > 0' "$PLAN" >/dev/null 2>&1; then
+    error "Plan must be JSON with a non-empty .partitions array"
+    exit 1
+fi
+
+errs=()
+add_err() { errs+=("$1"); }
+
+# Partition id and name shape check.
+# Empty .id or .name surfaces as one error per offending entry.
+while IFS=$'\t' read -r id name; do
+    [[ -n "$id"   ]] || add_err "partition missing .id"
+    [[ -n "$name" ]] || add_err "partition '$id' missing .name"
+done < <(jq -r '.partitions[] | [(.id // ""), (.name // "")] | @tsv' "$PLAN")
+
+dup_ids=$(jq -r '[.partitions[].id] | group_by(.) | map(select(length>1)|.[0])[]' "$PLAN")
+if [[ -n "$dup_ids" ]]; then
+    while IFS= read -r d; do add_err "duplicate partition id: $d"; done <<<"$dup_ids"
+fi
+
+# Coverage check: every changed file must be in exactly one partition.
+# Compare the set of diff files against the union of partition files.
+expected=$(git diff --name-only "$BASE"...HEAD | sort -u)
+plan_all=$(jq -r '.partitions[].files[]' "$PLAN" | sort)
+plan_uniq=$(echo "$plan_all" | uniq)
+
+dups=$(echo "$plan_all" | uniq -d || true)
+if [[ -n "$dups" ]]; then
+    while IFS= read -r f; do add_err "file in multiple partitions: $f"; done <<<"$dups"
+fi
+
+missing=$(comm -23 <(echo "$expected") <(echo "$plan_uniq") || true)
+if [[ -n "$missing" ]]; then
+    while IFS= read -r f; do add_err "missing from plan (in diff): $f"; done <<<"$missing"
+fi
+
+extra=$(comm -13 <(echo "$expected") <(echo "$plan_uniq") || true)
+if [[ -n "$extra" ]]; then
+    while IFS= read -r f; do add_err "in plan but not in diff: $f"; done <<<"$extra"
+fi
+
+# Per-partition file count and line change caps.
+# Single-file partitions are exempt from MAX_LINES (cannot be split).
+while IFS=$'\t' read -r id name nfiles; do
+    if (( nfiles > MAX_FILES )); then
+        add_err "partition $id ($name): $nfiles files > MAX_FILES=$MAX_FILES"
+    fi
+    mapfile -t files_arr < <(jq -r --arg id "$id" '.partitions[]|select(.id==$id)|.files[]' "$PLAN")
+    (( ${#files_arr[@]} > 0 )) || continue
+    stat=$(git diff --shortstat "$BASE"...HEAD -- "${files_arr[@]}" || true)
+    ins=$(echo "$stat"  | sed -nE 's/.*[^0-9]([0-9]+) insertion.*/\1/p'); ins=${ins:-0}
+    dels=$(echo "$stat" | sed -nE 's/.*[^0-9]([0-9]+) deletion.*/\1/p');  dels=${dels:-0}
+    total=$((ins + dels))
+    if (( total > MAX_LINES )) && (( nfiles > 1 )); then
+        add_err "partition $id ($name): $total line changes > MAX_LINES=$MAX_LINES (splittable: $nfiles files)"
+    fi
+done < <(jq -r '.partitions[] | [.id, .name, (.files | length)] | @tsv' "$PLAN")
+
+if (( ${#errs[@]} > 0 )); then
+    # Persist errors next to the plan so session-scoped plans don't collide.
+    # Strips a trailing .json (if any) before appending .errors.json.
+    errors_out="${PLAN%.json}.errors.json"
+    [[ "$errors_out" == "$PLAN" ]] && errors_out="$PLAN.errors.json"
+    error "Plan validation failed (${#errs[@]} issue(s)):"
+    for e in "${errs[@]}"; do echo "  - $e" >&2; done
+    printf '%s\n' "${errs[@]}" | jq -R . | jq -s '{errors: .}' > "$errors_out"
+    warn "Errors written to: $errors_out"
+    exit 1
+fi
+
+success "Plan valid: $(jq -r '.partitions | length' "$PLAN") partition(s) (caps MAX_FILES=$MAX_FILES MAX_LINES=$MAX_LINES)"
+exit 0

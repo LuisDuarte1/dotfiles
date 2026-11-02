@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+profile="$HOME/.nix-profile"
+session_vars="$profile/etc/profile.d/hm-session-vars.sh"
+export TERM="${TERM:-xterm-256color}"
+export XCURSOR_PATH="${XCURSOR_PATH:-}"
+
+if [ ! -r "$session_vars" ]; then
+    echo "Home Manager session variables are missing: $session_vars" >&2
+    exit 1
+fi
+
+# Home Manager creates this file at activation, outside the repository tree.
+# shellcheck disable=SC1090
+. "$session_vars"
+export PATH="$profile/bin:$PATH"
+unset AQ_DRM_DEVICES GBM_BACKEND __NV_PRIME_RENDER_OFFLOAD __GLX_VENDOR_LIBRARY_NAME
+
+case "${1-}" in
+    "")
+        exec "$profile/bin/start-hyprland"
+        ;;
+    --rescue)
+        exec "$profile/bin/start-hyprland" -- --config "$HOME/.config/hypr/rescue.lua"
+        ;;
+    *)
+        echo "Usage: hyprland-session [--rescue]" >&2
+        exit 2
+        ;;
+esac

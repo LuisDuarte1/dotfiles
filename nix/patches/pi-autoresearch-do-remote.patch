@@ -1,0 +1,402 @@
+diff -urN orig/extensions/pi-autoresearch/hooks.ts new/extensions/pi-autoresearch/hooks.ts
+--- orig/extensions/pi-autoresearch/hooks.ts	2026-09-22 22:51:20.916485308 +0100
++++ new/extensions/pi-autoresearch/hooks.ts	2026-09-22 22:51:20.919913191 +0100
+@@ -1,4 +1,5 @@
+ import { spawn } from "node:child_process";
++import { bridgedSpawnScript, bridgedWriteText } from "./pi-do-remote-bridge.ts";
+ import * as fs from "node:fs";
+ 
+ import { hasAutoresearchConfigHeader } from "./jsonl.ts";
+@@ -85,7 +86,7 @@
+ 
+   const t0 = Date.now();
+   return new Promise<HookResult>((resolve) => {
+-    const child = spawn("bash", [script], { cwd: payload.cwd, timeout: TIMEOUT_MS });
++    const child = bridgedSpawnScript({ scriptPath: script, cwd: payload.cwd, timeoutMs: TIMEOUT_MS });
+ 
+     let stdout = "";
+     let stdoutBytes = 0;
+@@ -163,16 +164,20 @@
+   }
+ }
+ 
+-export function appendHookLogEntryIfConfigured(
++export async function appendHookLogEntryIfConfigured(
+   jsonlPath: string,
+   stage: HookStage,
+   result: HookResult,
+-): boolean {
++): Promise<boolean> {
+   if (!result.fired) return false;
+   if (!hasConfigHeader(jsonlPath)) return false;
+ 
+   try {
+-    fs.appendFileSync(jsonlPath, JSON.stringify(hookLogEntry(stage, result)) + "\n");
++    await bridgedWriteText({
++      path: jsonlPath,
++      content: JSON.stringify(hookLogEntry(stage, result)) + "\n",
++      mode: "append",
++    });
+     return true;
+   } catch {
+     return false;
+diff -urN orig/extensions/pi-autoresearch/index.ts new/extensions/pi-autoresearch/index.ts
+--- orig/extensions/pi-autoresearch/index.ts	2026-09-22 22:51:20.916524102 +0100
++++ new/extensions/pi-autoresearch/index.ts	2026-09-22 22:51:20.919956401 +0100
+@@ -30,6 +30,7 @@
+ import { createServer, type Server, type ServerResponse } from "node:http";
+ 
+ import { spawn } from "node:child_process";
++import { bridgedSpawn, bridgedExec, bridgedWriteText } from "./pi-do-remote-bridge.ts";
+ import { createWriteStream } from "node:fs";
+ import { randomBytes } from "node:crypto";
+ import { tmpdir } from "node:os";
+@@ -355,6 +356,12 @@
+ 
+ /** Kill a process tree (best effort, tries process group first) */
+ function killTree(pid: number): void {
++  // In remote mode the pid belongs to a sandbox process, not the local
++  // OS. child.kill() in bridgedSpawn's SandboxChild already kills the
++  // whole sandbox-side tree via exec.kill RPC, so this would be a
++  // no-op local /proc walk anyway.
++  const r = (globalThis as { __piDoRemote?: { mode?: string } }).__piDoRemote;
++  if (r?.mode === "remote") return;
+   try {
+     process.kill(-pid, "SIGTERM");
+   } catch {
+@@ -1259,7 +1266,7 @@
+ 
+   const fireHook = async (payload: HookPayload): Promise<string | null> => {
+     const result = await runHook(payload);
+-    appendHookLogEntryIfConfigured(autoresearchJsonlPath(payload.cwd), payload.event, result);
++    await appendHookLogEntryIfConfigured(autoresearchJsonlPath(payload.cwd), payload.event, result);
+     return steerMessageFor(payload.event, result);
+   };
+ 
+@@ -1625,9 +1632,9 @@
+           bestDirection: state.bestDirection,
+         });
+         if (fs.existsSync(jsonlPath)) {
+-          fs.appendFileSync(jsonlPath, config + "\n");
++          await bridgedWriteText({ path: jsonlPath, content: config + "\n", mode: "append" });
+         } else {
+-          fs.writeFileSync(jsonlPath, config + "\n");
++          await bridgedWriteText({ path: jsonlPath, content: config + "\n", mode: "write" });
+         }
+         broadcastDashboardUpdate(workDir);
+       } catch (e) {
+@@ -1769,10 +1776,11 @@
+       }>((resolve, reject) => {
+         let processTimedOut = false;
+ 
+-        const child = spawn("bash", ["-c", params.command], {
++        const child = bridgedSpawn({
++          command: params.command,
+           cwd: workDir,
+           detached: true,
+-          stdio: ["ignore", "pipe", "pipe"],
++          signal,
+         });
+ 
+         // Rolling buffer for tail truncation (keep 2x what we need)
+@@ -1937,10 +1945,13 @@
+         const checksTimeout = (params.checks_timeout_seconds ?? 300) * 1000;
+         const ct0 = Date.now();
+         try {
+-          const checksResult = await pi.exec("bash", [checksPath], {
+-            signal,
+-            timeout: checksTimeout,
++          const checksResult = await bridgedExec({
++            cmd: "bash",
++            args: [checksPath],
+             cwd: workDir,
++            timeoutMs: checksTimeout,
++            signal,
++            piExec: pi.exec,
+           });
+           checksDuration = (Date.now() - ct0) / 1000;
+           checksTimedOut = !!checksResult.killed;
+@@ -1963,7 +1974,7 @@
+       const totalLines = output.split("\n").length;
+       if (!fullOutputPath && (actualTotalBytes > EXPERIMENT_MAX_BYTES || totalLines > EXPERIMENT_MAX_LINES)) {
+         fullOutputPath = getTempFile();
+-        fs.writeFileSync(fullOutputPath, output);
++        await bridgedWriteText({ path: fullOutputPath, content: output, mode: "write" });
+       }
+ 
+       // Wider truncation for TUI display (details.tailOutput)
+@@ -2390,24 +2401,40 @@
+           const commitMsg = `${params.description}\n\nResult: ${trailerJson}`;
+ 
+           const execOpts = { cwd: workDir, timeout: 10000 };
+-          const addResult = await pi.exec("git", ["add", "-A"], execOpts);
++          const addResult = await bridgedExec({
++            cmd: "git", args: ["add", "-A"],
++            cwd: execOpts.cwd, timeoutMs: execOpts.timeout,
++            piExec: pi.exec,
++          });
+           if (addResult.code !== 0) {
+             const addErr = (addResult.stdout + addResult.stderr).trim();
+             throw new Error(`git add failed (exit ${addResult.code}): ${addErr.slice(0, 200)}`);
+           }
+ 
+-          const diffResult = await pi.exec("git", ["diff", "--cached", "--quiet"], execOpts);
++          const diffResult = await bridgedExec({
++            cmd: "git", args: ["diff", "--cached", "--quiet"],
++            cwd: execOpts.cwd, timeoutMs: execOpts.timeout,
++            piExec: pi.exec,
++          });
+           if (diffResult.code === 0) {
+             text += `\n📝 Git: nothing to commit (working tree clean)`;
+           } else {
+-            const gitResult = await pi.exec("git", ["commit", "-m", commitMsg], execOpts);
++            const gitResult = await bridgedExec({
++              cmd: "git", args: ["commit", "-m", commitMsg],
++              cwd: execOpts.cwd, timeoutMs: execOpts.timeout,
++              piExec: pi.exec,
++            });
+             const gitOutput = (gitResult.stdout + gitResult.stderr).trim();
+             if (gitResult.code === 0) {
+               const firstLine = gitOutput.split("\n")[0] || "";
+               text += `\n📝 Git: committed — ${firstLine}`;
+ 
+               try {
+-                const shaResult = await pi.exec("git", ["rev-parse", "--short=7", "HEAD"], { cwd: workDir, timeout: 5000 });
++                const shaResult = await bridgedExec({
++                  cmd: "git", args: ["rev-parse", "--short=7", "HEAD"],
++                  cwd: workDir, timeoutMs: 5000,
++                  piExec: pi.exec,
++                });
+                 const newSha = (shaResult.stdout || "").trim();
+                 if (newSha && newSha.length >= 7) {
+                   experiment.commit = newSha;
+@@ -2434,7 +2461,7 @@
+       try {
+         const jsonlPath = autoresearchJsonlPath(workDir);
+         ensureParentDir(jsonlPath);
+-        fs.appendFileSync(jsonlPath, jsonlLine + "\n");
++        await bridgedWriteText({ path: jsonlPath, content: jsonlLine + "\n", mode: "append" });
+         broadcastDashboardUpdate(workDir);
+       } catch (e) {
+         text += `\n⚠️ Failed to write .auto/log.jsonl: ${e instanceof Error ? e.message : String(e)}`;
+@@ -2446,7 +2473,11 @@
+             git checkout -- . ':(exclude,glob)**/${AUTO_DIR}' ':(exclude,glob)**/${AUTO_DIR}/**' ':(exclude,glob)**/autoresearch.*' ':(exclude,glob)**/autoresearch.*/**'
+             git clean -fd -e '${AUTO_DIR}' -e '**/${AUTO_DIR}/**' -e 'autoresearch.*' -e '**/autoresearch.*/**' 2>/dev/null
+           `;
+-          await pi.exec("bash", ["-c", revertScript], { cwd: workDir, timeout: 10000 });
++          await bridgedExec({
++            cmd: "bash", args: ["-c", revertScript],
++            cwd: workDir, timeoutMs: 10000,
++            piExec: pi.exec,
++          });
+           text += `\n📝 Git: reverted changes (${params.status}) — autoresearch files preserved`;
+         } catch (e) {
+           text += `\n⚠️ Git revert failed: ${e instanceof Error ? e.message : String(e)}`;
+diff -urN orig/extensions/pi-autoresearch/pi-do-remote-bridge.ts new/extensions/pi-autoresearch/pi-do-remote-bridge.ts
+--- orig/extensions/pi-autoresearch/pi-do-remote-bridge.ts	1970-01-01 01:00:00.000000000 +0100
++++ new/extensions/pi-autoresearch/pi-do-remote-bridge.ts	2026-09-22 22:51:20.920053816 +0100
+@@ -0,0 +1,204 @@
++// pi-do-remote bridge: routes spawn/exec to a sandbox container when
++// the pi-do-remote extension is in remote mode. Added by a nix patch
++// when this extension is built from the upstream npm tarball.
++//
++// Mechanism: pi-do-remote installs `globalThis.__piDoRemote` on
++// /do-remote and removes it on /do-local. Every spawn/exec call site
++// in this package routes through `bridgedSpawn` / `bridgedExec` here,
++// which check the global and either delegate (remote) or fall through
++// to the original Node-local implementation.
++
++import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
++import { promises as fsp } from "node:fs";
++
++interface PiDoRemoteRuntime {
++  mode: "local" | "remote";
++  spawnBash?: (opts: {
++    command: string;
++    cwd: string;
++    env?: Record<string, string>;
++    timeoutMs?: number;
++    signal?: AbortSignal;
++  }) => ChildProcess;
++  execCommand?: (opts: {
++    cmd: string;
++    args: string[];
++    cwd: string;
++    env?: Record<string, string>;
++    timeoutMs?: number;
++    signal?: AbortSignal;
++  }) => Promise<{
++    stdout: string;
++    stderr: string;
++    code: number | null;
++    killed?: boolean;
++  }>;
++  // Optional: mirror a write to the sandbox so the in-container view
++  // of state files (autoresearch.jsonl etc.) stays in sync with the
++  // local source of truth. Fire-and-forget on the caller side.
++  fsWriteSandbox?: (opts: {
++    path: string;                     // local absolute path
++    content: string;
++    mode: "write" | "append";
++  }) => Promise<void>;
++  isKillTreeRemote?: () => boolean;
++}
++
++function runtime(): PiDoRemoteRuntime | undefined {
++  if (process.env.PI_AUTORESEARCH_NO_REMOTE === "1") return undefined;
++  return (globalThis as { __piDoRemote?: PiDoRemoteRuntime }).__piDoRemote;
++}
++
++// Returns true if a kill-tree on the local /proc is meaningless. The
++// pi-do-remote bridge runs experiments in the sandbox so the pid the
++// caller has is a container-side pid; the local proc walk would do
++// nothing harmful but also nothing useful. Caller short-circuits.
++
++export function isRemoteActive(): boolean {
++  const r = runtime();
++  return r?.mode === "remote";
++}
++
++// Spawn a bash command. In remote mode delegates to the registered
++// sandbox runner and returns a ChildProcess-compatible object. In
++// local mode falls back to node:child_process.spawn with the standard
++// options autoresearch uses.
++
++export function bridgedSpawn(opts: {
++  command: string;
++  cwd: string;
++  env?: Record<string, string>;
++  timeoutMs?: number;
++  signal?: AbortSignal;
++  detached?: boolean;
++}): ChildProcess {
++  const r = runtime();
++  if (r?.mode === "remote" && typeof r.spawnBash === "function") {
++    return r.spawnBash({
++      command: opts.command,
++      cwd: opts.cwd,
++      env: opts.env,
++      timeoutMs: opts.timeoutMs,
++      signal: opts.signal,
++    });
++  }
++  return nodeSpawn("bash", ["-c", opts.command], {
++    cwd: opts.cwd,
++    env: opts.env as NodeJS.ProcessEnv | undefined,
++    signal: opts.signal,
++    detached: opts.detached ?? true,
++    stdio: ["ignore", "pipe", "pipe"],
++  });
++}
++
++// Spawn a bash script (file path argv form: bash <script>). Used by
++// the hooks runner. Same dispatch as bridgedSpawn but with the script
++// path interpolated into a wrapper command for the remote side.
++
++export function bridgedSpawnScript(opts: {
++  scriptPath: string;
++  cwd: string;
++  env?: Record<string, string>;
++  timeoutMs?: number;
++  signal?: AbortSignal;
++}): ChildProcess {
++  const r = runtime();
++  if (r?.mode === "remote" && typeof r.spawnBash === "function") {
++    return r.spawnBash({
++      command: `bash ${shellQuote(opts.scriptPath)}`,
++      cwd: opts.cwd,
++      env: opts.env,
++      timeoutMs: opts.timeoutMs,
++      signal: opts.signal,
++    });
++  }
++  return nodeSpawn("bash", [opts.scriptPath], {
++    cwd: opts.cwd,
++    env: opts.env as NodeJS.ProcessEnv | undefined,
++    signal: opts.signal,
++    timeout: opts.timeoutMs,
++  });
++}
++
++// Run command capturing all output. Used to replace pi.exec(...)
++// calls. The original pi.exec is passed in as `piExec` so we can
++// fall through identically when local.
++
++export async function bridgedExec(opts: {
++  cmd: string;
++  args: string[];
++  cwd: string;
++  env?: Record<string, string>;
++  timeoutMs?: number;
++  signal?: AbortSignal;
++  piExec: (
++    cmd: string,
++    args: string[],
++    options: {
++      cwd?: string;
++      env?: Record<string, string>;
++      timeout?: number;
++      signal?: AbortSignal;
++    },
++  ) => Promise<{
++    stdout: string;
++    stderr: string;
++    code: number | null;
++    killed?: boolean;
++  }>;
++}): Promise<{ stdout: string; stderr: string; code: number | null; killed?: boolean }> {
++  const r = runtime();
++  if (r?.mode === "remote" && typeof r.execCommand === "function") {
++    return r.execCommand({
++      cmd: opts.cmd,
++      args: opts.args,
++      cwd: opts.cwd,
++      env: opts.env,
++      timeoutMs: opts.timeoutMs,
++      signal: opts.signal,
++    });
++  }
++  return opts.piExec(opts.cmd, opts.args, {
++    cwd: opts.cwd,
++    env: opts.env,
++    timeout: opts.timeoutMs,
++    signal: opts.signal,
++  });
++}
++
++// Minimal shell quoting for embedding paths into a remote bash -c
++// command. Single-quote everything, escape internal single quotes.
++
++function shellQuote(s: string): string {
++  return `'${s.replace(/'/g, `'\\''`)}'`;
++}
++
++// Write a text file. Always writes locally (so the dashboard and any
++// sync readers see the change immediately) and, when running under
++// pi-do-remote in remote mode, also pushes the new content to the
++// sandbox so in-container readers (LLM tool calls, autoresearch.sh,
++// etc.) see consistent state without waiting for /do-watch.
++//
++// Sandbox push is fire-and-forget by design: the local write is the
++// source of truth, so an extra round-trip to the sandbox shouldn't
++// gate the autoresearch loop. Errors are logged but never thrown back
++// to the caller.
++
++export async function bridgedWriteText(opts: {
++  path: string;
++  content: string;
++  mode: "write" | "append";
++}): Promise<void> {
++  if (opts.mode === "append") {
++    await fsp.appendFile(opts.path, opts.content);
++  } else {
++    await fsp.writeFile(opts.path, opts.content);
++  }
++  const r = runtime();
++  if (r?.mode === "remote" && typeof r.fsWriteSandbox === "function") {
++    void r.fsWriteSandbox(opts).catch((e: unknown) => {
++      const msg = e instanceof Error ? e.message : String(e);
++      console.error(`[pi-do-remote-bridge] sandbox mirror failed for ${opts.path}: ${msg}`);
++    });
++  }
++}

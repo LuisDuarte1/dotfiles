@@ -1,0 +1,182 @@
+diff -urN orig/extensions/pi-autoresearch/index.ts new/extensions/pi-autoresearch/index.ts
+--- orig/extensions/pi-autoresearch/index.ts	2026-09-23 16:43:57.165117856 +0100
++++ new/extensions/pi-autoresearch/index.ts	2026-09-23 16:46:04.797062210 +0100
+@@ -114,6 +114,7 @@
+ 
+ export const AUTORESUME_TURN_LIMIT = 200;
+ export const CONSECUTIVE_FAILURE_OVERRIDE_LIMIT = 20;
++export const WRAPUP_DONE_NOTICE = "Autoresearch wrap-up complete — mode OFF";
+ 
+ type AutoResumeGuardState = Pick<ExperimentState, "results" | "currentSegment">;
+ type AutoResumeGuardRuntime = {
+@@ -188,6 +189,7 @@
+   pendingResumeTimer: ReturnType<typeof setTimeout> | null;
+   /** Resume message to send when the pending timer fires. */
+   pendingResumeMessage: string | null;
++  wrapupRequested: boolean; // set by /autoresearch wrapup; the next log_experiment or agent_end turns the mode off
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -741,6 +743,7 @@
+     state: createExperimentState(),
+     pendingResumeTimer: null,
+     pendingResumeMessage: null,
++    wrapupRequested: false,
+   };
+ }
+ 
+@@ -1105,7 +1108,9 @@
+ 
+   // The one place mode flips: gated tools follow the flag, never drifting from it.
+   const setAutoresearchMode = (ctx: ExtensionContext, enabled: boolean): void => {
+-    getRuntime(ctx).autoresearchMode = enabled;
++    const runtime = getRuntime(ctx);
++    runtime.autoresearchMode = enabled;
++    if (!enabled) runtime.wrapupRequested = false; // a wrap-up only means something while the loop is on
+     const activeTools = new Set(pi.getActiveTools()); // setActiveTools replaces the whole set
+     for (const tool of gatedToolNames) {
+       enabled ? activeTools.add(tool) : activeTools.delete(tool);
+@@ -1294,10 +1299,11 @@
+ 
+   const autoresearchHelp = () =>
+     [
+-      "Usage: /autoresearch [off|clear|export|dashboard|<text>]",
++      "Usage: /autoresearch [off|wrapup|clear|export|dashboard|<text>]",
+       "",
+       "<text> enters autoresearch mode and starts or resumes the loop.",
+       "off leaves autoresearch mode.",
++      "wrapup lets the current experiment finish and get logged, then leaves autoresearch mode.",
+       "clear deletes the session log (.auto/log.jsonl) and turns autoresearch mode off.",
+       "export opens a local live dashboard for the session log in your browser.",
+       "dashboard opens the fullscreen dashboard overlay in the terminal.",
+@@ -1306,6 +1312,7 @@
+       "Examples:",
+       "  /autoresearch optimize unit test runtime, monitor correctness",
+       "  /autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target",
++      "  /autoresearch wrapup",
+       "  /autoresearch export",
+       "  /autoresearch dashboard",
+     ].join("\n");
+@@ -1322,6 +1329,7 @@
+     runtime.runningExperiment = null;
+     runtime.experimentsThisSession = 0;
+     runtime.autoResumeTurns = 0;
++    runtime.wrapupRequested = false;
+     runtime.state = createExperimentState();
+ 
+     let state = runtime.state;
+@@ -1446,7 +1454,7 @@
+         render(width: number): string[] {
+           const safeWidth = Math.max(1, width || getTuiSize(tui).width);
+           const title = truncateDisplayText(
+-            `🔬 autoresearch${state.name ? `: ${state.name}` : ""}`,
++            `🔬 autoresearch${state.name ? `: ${state.name}` : ""}${runtime.wrapupRequested ? " · wrapping up" : ""}`,
+             Math.max(0, safeWidth - 5)
+           );
+           const fillLen = Math.max(0, safeWidth - 3 - 1 - visibleWidth(title) - 1);
+@@ -1524,6 +1532,12 @@
+     const runtime = getRuntime(ctx);
+     runtime.runningExperiment = null;
+     if (overlayTui) overlayTui.requestRender();
++    // Catches a wrap-up whose turn ended without another log_experiment; it must
++    // run before ensurePendingResume, otherwise the next iteration gets queued.
++    if (runtime.wrapupRequested) {
++      turnAutoresearchOff(ctx, { abort: false, notice: WRAPUP_DONE_NOTICE });
++      return;
++    }
+     ensurePendingResume(ctx, shouldAutoResumeAfterTurn);
+   });
+ 
+@@ -2504,6 +2518,11 @@
+         recordAutoresearchActivation(workDir, false);
+         setAutoresearchMode(ctx, false);
+         ctx.abort();
++      } else if (runtime.wrapupRequested) {
++        // No abort: the gated tools are already gone from the next request, so the
++        // model can still summarise but has no way to start another experiment.
++        text += "\n\n🛑 Wrap-up requested by the user — the experiment loop is now stopped. Do NOT start another experiment. Reply with a brief summary of this session (best result, what was kept) and end your turn.";
++        turnAutoresearchOff(ctx, { abort: false, notice: WRAPUP_DONE_NOTICE });
+       } else if (runtime.autoresearchMode) {
+         text += "\n\nBefore choosing the next experiment, consider whether this result or discovery invalidates a previous discard's rollback reason. If so, name what changed and weigh a targeted retry against other candidates. Otherwise, move on. Don't revive a discarded idea without a changed assumption. Verification reruns to resolve measurement noise are separate.";
+         const beforeSteer = await fireHook({
+@@ -3025,9 +3044,12 @@
+   // /autoresearch command — enter autoresearch mode
+   // -----------------------------------------------------------------------
+ 
+-  function turnAutoresearchOff(ctx: ExtensionContext): void {
++  function turnAutoresearchOff(
++    ctx: ExtensionContext,
++    { abort, notice }: { abort: boolean; notice?: string } = { abort: true },
++  ): void {
+     const runtime = getRuntime(ctx);
+-    const wasRunning = !ctx.isIdle();
++    const wasRunning = abort && !ctx.isIdle();
+     const workDir = resolveWorkDir(ctx.cwd);
+ 
+     recordAutoresearchActivation(workDir, false);
+@@ -3042,13 +3064,32 @@
+     clearSessionUi(ctx);
+     if (wasRunning) ctx.abort();
+     ctx.ui.notify(
+-      wasRunning ? "Autoresearch mode OFF — aborting current run" : "Autoresearch mode OFF",
++      notice ?? (wasRunning ? "Autoresearch mode OFF — aborting current run" : "Autoresearch mode OFF"),
+       "info"
+     );
+   }
+ 
++  function requestWrapup(ctx: ExtensionContext): void {
++    const runtime = getRuntime(ctx);
++    if (!runtime.autoresearchMode) {
++      ctx.ui.notify("Autoresearch mode is not active", "info");
++      return;
++    }
++    if (runtime.wrapupRequested) {
++      ctx.ui.notify("Wrap-up already pending — use '/autoresearch off' to stop immediately", "info");
++      return;
++    }
++    if (ctx.isIdle()) {
++      turnAutoresearchOff(ctx, { abort: false, notice: "No experiment in flight — autoresearch mode OFF" });
++      return;
++    }
++    runtime.wrapupRequested = true;
++    updateWidget(ctx);
++    ctx.ui.notify("Autoresearch will stop after the current experiment is logged", "info");
++  }
++
+   pi.registerCommand("autoresearch", {
+-    description: "Start, stop, clear, export, or open dashboards for autoresearch mode",
++    description: "Start, stop, wrap up, clear, export, or open dashboards for autoresearch mode",
+     handler: async (args, ctx) => {
+       const runtime = getRuntime(ctx);
+       const trimmedArgs = (args ?? "").trim();
+@@ -3064,6 +3105,11 @@
+         return;
+       }
+ 
++      if (command === "wrapup") {
++        requestWrapup(ctx);
++        return;
++      }
++
+       if (command === "export") {
+         await exportDashboard(ctx);
+         return;
+diff -urN orig/README.md new/README.md
+--- orig/README.md	1985-10-26 08:15:00.000000000 +0000
++++ new/README.md	2026-09-23 16:46:08.683907058 +0100
+@@ -46,6 +46,7 @@
+ |------------|-------------|
+ | `/autoresearch <text>` | Enter autoresearch mode. If `.auto/prompt.md` exists, resumes the loop with `<text>` as context. Otherwise, sets up a new session. |
+ | `/autoresearch off` | Leave autoresearch mode. Stops auto-resume and clears runtime state but keeps `.auto/log.jsonl` intact. |
++| `/autoresearch wrapup` | Let the in-flight experiment finish and get logged (committed or reverted), then leave autoresearch mode. Unlike `off`, nothing is aborted. If no experiment is in flight, it turns off right away. |
+ | `/autoresearch clear` | Delete `.auto/log.jsonl`, reset all state, and turn autoresearch mode off. Use this for a clean start. |
+ | `/autoresearch export` | Open a live dashboard in your browser. Auto-updates as experiments run. |
+ | `/autoresearch dashboard` | Open the fullscreen scrollable dashboard overlay in the terminal. Navigate with `↑`/`↓`/`j`/`k`, `PageUp`/`PageDown`/`u`/`d`, `g`/`G` for top/bottom, `Escape` or `q` to close. |
+@@ -57,6 +58,7 @@
+ /autoresearch model training, run 5 minutes of train.py and note the loss ratio as optimization target
+ /autoresearch export
+ /autoresearch dashboard
++/autoresearch wrapup
+ /autoresearch off
+ /autoresearch clear
+ ```

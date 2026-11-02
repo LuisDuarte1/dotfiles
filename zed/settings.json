@@ -1,0 +1,41 @@
+{
+    "show_edit_predictions": false,
+    "features": {
+        "edit_prediction_provider": "none"
+    },
+    "auto_update": false,
+    "agent": {
+        "default_profile": "minimal"
+    },
+    "language_models": {
+        "ollama": {
+            "api_url": "http://localhost:11434",
+            "available_models": [
+                {
+                    "name": "gemma3:4b-it-q8_0",
+                    "display_name": "gemma3 4b",
+                    "max_tokens": 78000
+                }
+            ]
+        }
+    },
+    "ui_font_size": 16,
+    "buffer_font_size": 14,
+    "theme": {
+        "mode": "system",
+        "light": "Ayu Dark",
+        "dark": "One Dark"
+    },
+    "base_keymap": "VSCode",
+    "format_on_save": "off",
+    "hide_mouse": "never",
+    "tab_size": 4,
+    "languages": {
+        "TypeScript": {
+            "tab_size": 4
+        },
+        "Make": {
+            "hard_tabs": true
+        }
+    }
+}

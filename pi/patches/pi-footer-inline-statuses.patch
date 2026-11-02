@@ -1,0 +1,53 @@
+Inline extension statuses into the footer's stats line when they fit.
+
+Statuses otherwise always take a third footer line, even a single short indicator
+such as pi-tldraw's "│ • tldraw" on a terminal with room to spare beside the model.
+That dot is purely decorative, so when it does not fit it is dropped, never given a line.
+
+--- a/dist/modes/interactive/components/footer.js
++++ b/dist/modes/interactive/components/footer.js
+@@ -3,6 +3,7 @@
+ import { areExperimentalFeaturesEnabled } from "../../../core/experimental.js";
+ import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.js";
+ import { theme } from "../theme/theme.js";
++const DECORATIVE_STATUS_KEYS = new Set(["tldraw"]); // pi-tldraw's "• tldraw" dot: shown only beside the stats
+ /**
+  * Sanitize text for display in a single-line status.
+  * Removes newlines, tabs, carriage returns, and other control characters.
+@@ -220,6 +221,22 @@
+             }
+         }
+         const rightSideWidth = visibleWidth(rightSide);
++        // Extension statuses join the stats line when they fit beside the model, saving a footer line;
++        // purely decorative ones are dropped instead of taking a line of their own.
++        const fitsInline = (text) => text !== "" && statsLeftWidth + 1 + visibleWidth(text) + minPadding + rightSideWidth <= width;
++        const joinStatuses = (keep) => Array.from(this.footerData.getExtensionStatuses().entries())
++            .filter(([key]) => keep(key))
++            .sort(([a], [b]) => a.localeCompare(b))
++            .map(([, text]) => sanitizeStatusText(text))
++            .join(" ");
++        let statusLine = joinStatuses(() => true);
++        if (!fitsInline(statusLine)) statusLine = joinStatuses((key) => !DECORATIVE_STATUS_KEYS.has(key));
++        const inlineStatus = fitsInline(statusLine);
++        if (inlineStatus) {
++            const padding = " ".repeat(width - statsLeftWidth - 1 - visibleWidth(statusLine) - rightSideWidth);
++            const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
++            return [pwdLine, theme.fg("dim", statsLeft) + " " + statusLine + theme.fg("dim", padding + rightSide)];
++        }
+         const totalNeeded = statsLeftWidth + minPadding + rightSideWidth;
+         let statsLine;
+         if (totalNeeded <= width) {
+@@ -250,12 +267,7 @@
+         const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+         const lines = [pwdLine, dimStatsLeft + dimRemainder];
+         // Add extension statuses on a single line, sorted by key alphabetically
+-        const extensionStatuses = this.footerData.getExtensionStatuses();
+-        if (extensionStatuses.size > 0) {
+-            const sortedStatuses = Array.from(extensionStatuses.entries())
+-                .sort(([a], [b]) => a.localeCompare(b))
+-                .map(([, text]) => sanitizeStatusText(text));
+-            const statusLine = sortedStatuses.join(" ");
++        if (statusLine !== "") {
+             // Truncate to terminal width with dim ellipsis for consistency with footer style
+             lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+         }

@@ -1,0 +1,308 @@
+#!/bin/bash
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info()    { echo -e "${BLUE}$*${NC}"; }
+success() { echo -e "${GREEN}$*${NC}"; }
+warn()    { echo -e "${YELLOW}$*${NC}"; }
+error()   { echo -e "${RED}Error: $*${NC}" >&2; }
+
+check_dependency() {
+    if ! command -v "$1" &>/dev/null; then
+        error "'$1' is not installed. Please install it first."
+        exit 1
+    fi
+}
+
+show_help() {
+    cat <<'EOF'
+Usage: pi-update [OPTIONS]
+
+Check for new @earendil-works/pi-coding-agent npm releases and update the
+dotfiles flake. If a newer release exists, refreshes the pinned tarball
+hash, regenerates nix/pi-package-lock.json, updates npmDepsHash, rebuilds
+the nix profile, and commits the result.
+
+Options:
+  --force    Update even if already at the latest version
+  --dry-run  Show what would be done without making changes
+  --help     Show this help message
+
+Environment:
+  DOTFILES_DIR  Path to dotfiles repo (default: the repo this script lives in)
+
+Examples:
+  pi-update              # auto-update if new release available
+  pi-update --dry-run    # check without changing anything
+  pi-update --force      # force rebuild even if up to date
+EOF
+}
+
+DOTFILES_DIR="${DOTFILES_DIR:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd -P)}"
+NPM_PKG="@earendil-works/pi-coding-agent"
+# npm 11.4 crashes on pi 0.85.0's optional Vitest peer dependency graph.
+# Pinning lock generation also prevents npm-version lockfile churn.
+LOCKFILE_NPM_VERSION="11.6.4"
+FORCE=false
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h) show_help; exit 0 ;;
+        --force)   FORCE=true; shift ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        *)         error "Unknown option: $1"; show_help; exit 1 ;;
+    esac
+done
+
+check_dependency curl
+check_dependency jq
+check_dependency nix
+check_dependency npm
+check_dependency sed
+check_dependency flock
+
+PI_NIX="$DOTFILES_DIR/nix/pi.nix"
+PI_LOCK="$DOTFILES_DIR/nix/pi-package-lock.json"
+
+notify() {
+    notify-send "pi" "$1" 2>/dev/null || true
+}
+
+# Serialize with other dotfiles updaters on a shared lock so a wake-from-suspend
+# double-fire of several timers can never run two nix builds at once.
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/dotfiles-nix-update.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -w 1200 9; then
+    warn "Another dotfiles nix update is in progress; skipping this run."
+    notify "Update skipped — sibling nix update still running"
+    exit 0
+fi
+
+# Refuse to run on a dirty tree: unrelated bumps must not ride along, and a
+# dirty pi pin means an interrupted run whose version cannot be trusted.
+guard_files=(flake.nix flake.lock nix/pi.nix nix/pi-package-lock.json)
+dirty=()
+for f in "${guard_files[@]}"; do
+    if [[ -n "$(git -C "$DOTFILES_DIR" status --porcelain -- "$f" 2>/dev/null)" ]]; then
+        dirty+=("$f")
+    fi
+done
+if (( ${#dirty[@]} > 0 )); then
+    error "Refusing to update: dotfiles changes are uncommitted:"
+    for f in "${dirty[@]}"; do error "  - $f"; done
+    error "Commit, stash, or revert these before running pi-update."
+    notify "Update aborted: dirty tree (${dirty[*]})"
+    exit 1
+fi
+
+# Snapshot pi.nix so we can roll back if any subsequent step fails. This
+# guarantees we never leave the file with placeholder (AAAA...) hashes.
+PI_NIX_BACKUP=$(mktemp)
+PI_LOCK_BACKUP=$(mktemp)
+cp "$PI_NIX" "$PI_NIX_BACKUP"
+cp "$PI_LOCK" "$PI_LOCK_BACKUP"
+UPDATE_APPLIED=false
+TMP_DIR=""
+rollback() {
+    warn "Rolling back $PI_NIX and $PI_LOCK to pre-update state"
+    cp "$PI_NIX_BACKUP" "$PI_NIX"
+    cp "$PI_LOCK_BACKUP" "$PI_LOCK"
+}
+# Roll back on *any* exit before the profile upgrade lands, not just on the
+# error paths: a shutdown SIGTERM once left a bumped pin that masked failures.
+cleanup() {
+    if [[ "$UPDATE_APPLIED" != true ]] \
+        && { ! cmp -s "$PI_NIX_BACKUP" "$PI_NIX" || ! cmp -s "$PI_LOCK_BACKUP" "$PI_LOCK"; }; then
+        rollback
+    fi
+    rm -f "$PI_NIX_BACKUP" "$PI_LOCK_BACKUP"
+    [[ -n "$TMP_DIR" ]] && rm -rf "$TMP_DIR"
+    return 0
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
+# Fetch latest version from npm registry
+latest=$(curl -sf "https://registry.npmjs.org/${NPM_PKG}/latest" | jq -r '.version')
+if [[ -z "$latest" || "$latest" == "null" ]]; then
+    error "Failed to fetch latest version from npm"
+    notify "Update failed: could not fetch latest version"
+    exit 1
+fi
+
+# Read the pin from HEAD, not the worktree: only a committed bump means the
+# build and profile upgrade actually succeeded for that version.
+current=$(git -C "$DOTFILES_DIR" show HEAD:nix/pi.nix 2>/dev/null \
+    | sed -n 's/^[[:space:]]*version = "\([^"]*\)";.*/\1/p' | head -1)
+if [[ -z "$current" ]]; then
+    current=$(sed -n 's/^[[:space:]]*version = "\([^"]*\)";.*/\1/p' "$PI_NIX" | head -1)
+fi
+if [[ -z "$current" ]]; then
+    error "Could not parse current version from $PI_NIX"
+    exit 1
+fi
+
+info "Current: $current"
+info "Latest:  $latest"
+
+if [[ "$latest" = "$current" ]] && [[ "$FORCE" = false ]]; then
+    success "pi already at $current"
+    exit 0
+fi
+
+if [[ "$DRY_RUN" = true ]]; then
+    info "[dry-run] Would update pi: $current -> $latest"
+    exit 0
+fi
+
+info "Updating pi: $current -> $latest"
+
+# 1. Pin new version in nix/pi.nix and reset hashes to fakeHash so the next
+#    build prints the real hashes for us to substitute in.
+sed -i "s|^\([[:space:]]*version = \"\)[^\"]*\(\";\)|\1${latest}\2|" "$PI_NIX"
+sed -i "s|hash = \"sha256-[A-Za-z0-9+/=]*\";|hash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";|" "$PI_NIX"
+sed -i "s|npmDepsHash = \"sha256-[A-Za-z0-9+/=]*\";|npmDepsHash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";|" "$PI_NIX"
+
+# 2. Regenerate nix/pi-package-lock.json from the new tarball. We always run
+#    `npm install --package-lock-only` so every dep gets a real integrity
+#    hash; the upstream npm-shrinkwrap.json (when present) is missing
+#    integrity for inter-workspace @earendil-works/* packages, which makes
+#    buildNpmPackage's Rust prefetcher panic.
+info "Regenerating nix/pi-package-lock.json..."
+tmp=$(mktemp -d)
+TMP_DIR="$tmp"
+curl -sfL "https://registry.npmjs.org/${NPM_PKG}/-/pi-coding-agent-${latest}.tgz" -o "$tmp/pkg.tgz"
+tar -xzf "$tmp/pkg.tgz" -C "$tmp"
+
+# Strip any shipped lockfiles so npm regenerates from scratch with full SRI
+# hashes instead of updating an incomplete shrinkwrap in place.
+rm -f "$tmp/package/npm-shrinkwrap.json" "$tmp/package/package-lock.json"
+
+npm_log="$tmp/npm-install.log"
+if ! (cd "$tmp/package" && npm exec --yes --package "npm@${LOCKFILE_NPM_VERSION}" -- \
+    npm install --package-lock-only --no-audit --no-fund --ignore-scripts) >"$npm_log" 2>&1; then
+    error "npm install --package-lock-only failed:"
+    cat "$npm_log" >&2
+    notify "Update to $latest failed — npm install error"
+    rollback
+    exit 1
+fi
+if [[ ! -f "$tmp/package/package-lock.json" ]]; then
+    error "npm install succeeded but produced no package-lock.json"
+    cat "$npm_log" >&2
+    notify "Update to $latest failed — no lockfile produced"
+    rollback
+    exit 1
+fi
+cp "$tmp/package/package-lock.json" "$PI_LOCK"
+
+# 3. Drive nix build with hash auto-fix loop. First iteration captures the
+#    tarball hash, second the npmDepsHash, third is the actual build.
+patch_hash() {
+    local key="$1" new="$2"
+    case "$key" in
+        tarball)
+            sed -i "0,/hash = \"sha256-[A-Za-z0-9+/=]*\";/s||hash = \"$new\";|" "$PI_NIX"
+            ;;
+        npm)
+            sed -i "s|npmDepsHash = \"sha256-[A-Za-z0-9+/=]*\";|npmDepsHash = \"$new\";|" "$PI_NIX"
+            ;;
+    esac
+}
+
+# Hash-fix loop builds ONLY `.#pi-coding-agent` so unrelated package failures
+# (e.g. a broken input) cannot abort it and leave pi.nix with placeholder hashes.
+attempt_build() {
+    local iter
+    for iter in 1 2 3 4; do
+        local out
+        if out=$(nix build "$DOTFILES_DIR#pi-coding-agent" --no-link 2>&1); then
+            return 0
+        fi
+
+        # Parse the FIRST `hash mismatch in fixed-output derivation '<path>'`
+        # block, then read the `got:` line that immediately follows it.
+        local mismatch_drv got
+        mismatch_drv=$(echo "$out" \
+            | grep -oP "hash mismatch in fixed-output derivation '\K[^']+" \
+            | head -1)
+        got=$(echo "$out" \
+            | awk '/hash mismatch in fixed-output derivation/{f=1; next} f && /got:/{print; exit}' \
+            | grep -oP 'sha256-\S+')
+
+        if [[ -z "$mismatch_drv" || -z "$got" ]]; then
+            error "Build failed (iteration $iter) with no hash mismatch detected"
+            echo "$out" >&2
+            return 1
+        fi
+
+        case "$mismatch_drv" in
+            *pi-coding-agent-${latest}-npm-deps*)
+                info "iter $iter: patching npmDepsHash -> $got"
+                patch_hash npm "$got"
+                ;;
+            *pi-coding-agent-${latest}.tgz*|*pi-coding-agent-${latest}-src*)
+                info "iter $iter: patching tarball hash -> $got"
+                patch_hash tarball "$got"
+                ;;
+            *)
+                error "Unknown hash mismatch in $mismatch_drv (iteration $iter)"
+                echo "$out" >&2
+                return 1
+                ;;
+        esac
+    done
+    error "Build still failing after 4 hash fix iterations"
+    return 1
+}
+
+if ! attempt_build; then
+    notify "Update to $latest failed — build error"
+    rollback
+    exit 1
+fi
+
+# 4. Upgrade the profile. The shared lock keeps flake.lock committed, so only pi rebuilds; the
+# element is found by URL because its name follows the checkout dir (e.g. "public").
+element=$(nix profile list --json \
+    | jq -r --arg u "git+file://$DOTFILES_DIR" '.elements | to_entries[] | select(.value.originalUrl == $u) | .key' \
+    | head -n 1 || true)
+if [[ -z "$element" ]]; then
+    error "No nix profile element installed from git+file://$DOTFILES_DIR"
+    notify "Update to $latest failed — profile element not found"
+    rollback
+    exit 1
+fi
+if nix profile upgrade "$element" 2>&1; then
+    UPDATE_APPLIED=true
+    success "pi updated to $latest"
+    notify "Updated to $latest"
+else
+    error "Profile upgrade failed"
+    notify "Update to $latest failed — profile upgrade error"
+    rollback
+    exit 1
+fi
+
+# 5. Auto-commit the version bump + new lockfile.
+changed=false
+for f in nix/pi.nix nix/pi-package-lock.json; do
+    if [[ -n "$(git -C "$DOTFILES_DIR" status --porcelain -- "$f" 2>/dev/null)" ]]; then
+        git -C "$DOTFILES_DIR" add "$f"
+        changed=true
+    fi
+done
+if [[ "$changed" = true ]] && ! git -C "$DOTFILES_DIR" diff --cached --quiet; then
+    git -C "$DOTFILES_DIR" commit -m "chore: update pi-coding-agent to $latest"
+    info "Committed update"
+else
+    info "Nothing to commit"
+fi

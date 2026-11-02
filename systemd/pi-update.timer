@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for pi updates every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 03/6:00:00
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

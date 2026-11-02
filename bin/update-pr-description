@@ -1,0 +1,141 @@
+#!/bin/bash
+# Check if a merge request exists for the current branch and compare its description
+# with the locally generated one from commit titles and descriptions.
+# If they mismatch, update the remote MR with the local description.
+
+set -euo pipefail
+
+# Get the current branch name
+current_branch=$(git branch --show-current)
+
+if [[ -z "$current_branch" ]]; then
+    echo "Error: Not on any branch (detached HEAD state?)"
+    exit 1
+fi
+
+if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+    echo "Error: Currently on $current_branch branch. Switch to a feature branch."
+    exit 1
+fi
+
+# Determine the target branch (usually main or master)
+if git show-ref --verify --quiet refs/heads/main; then
+    target_branch="main"
+elif git show-ref --verify --quiet refs/heads/master; then
+    target_branch="master"
+else
+    echo "Error: Could not find main or master branch"
+    exit 1
+fi
+
+echo "Checking for MR on branch: $current_branch"
+echo "---"
+
+# Fetch latest from remote to ensure we have up-to-date refs
+echo "Checking if there are changes from the remote"
+echo "---"
+git fetch origin "$current_branch" --quiet 2>/dev/null || true
+
+# Check if local HEAD matches remote HEAD
+local_head=$(git rev-parse HEAD)
+remote_head=$(git rev-parse "origin/$current_branch" 2>/dev/null) || {
+    echo "Error: Remote branch 'origin/$current_branch' not found. Push your branch first."
+    exit 1
+}
+
+if [[ "$local_head" != "$remote_head" ]]; then
+    echo "Error: Local HEAD ($local_head) differs from remote HEAD ($remote_head)"
+    echo "Push your changes before updating the MR description."
+    exit 1
+fi
+
+# Generate local description from commits
+# Get all commits between target branch and current branch
+generate_local_description() {
+    local description=""
+
+    # Get commit hashes from oldest to newest
+    commits=$(git log --reverse --format="%H" "$target_branch".."$current_branch")
+
+    if [[ -z "$commits" ]]; then
+        echo ""
+        return
+    fi
+
+    while IFS= read -r commit_hash; do
+        # Get commit title (first line of commit message)
+        commit_title=$(git log -1 --format="%s" "$commit_hash")
+        commit_body=$(git log -1 --format="%b" "$commit_hash")
+
+        # Add title as header
+        if [[ -n "$description" ]]; then
+            description+=$'\n\n'
+        fi
+        description+="## $commit_title"
+
+        # Add body if it exists
+        if [[ -n "$commit_body" ]]; then
+            description+=$'\n\n'"$commit_body"
+        fi
+    done <<< "$commits"
+
+    echo "$description"
+}
+
+local_description=$(generate_local_description)
+
+if [[ -z "$local_description" ]]; then
+    echo "No commits found between $target_branch and $current_branch"
+    exit 0
+fi
+
+echo "=== Local Description (from commits) ==="
+echo "$local_description"
+echo ""
+
+# Try to get the MR description using glab
+if ! mr_output=$(glab mr view "$current_branch" --output json 2>&1); then
+    # Check if no MR exists
+    if echo "$mr_output" | grep -qi "no open merge request"; then
+        echo "No open merge request found for branch: $current_branch"
+        exit 0
+    elif echo "$mr_output" | grep -qi "could not find"; then
+        echo "No merge request found for branch: $current_branch"
+        exit 0
+    else
+        echo "Error checking MR: $mr_output"
+        exit 1
+    fi
+fi
+
+# Parse the JSON output to extract title and description
+title=$(echo "$mr_output" | jq -r '.title // "No title"')
+remote_description=$(echo "$mr_output" | jq -r '.description // ""')
+state=$(echo "$mr_output" | jq -r '.state // "unknown"')
+web_url=$(echo "$mr_output" | jq -r '.web_url // ""')
+
+echo "=== MR Found ==="
+echo "State: $state"
+echo "Title: $title"
+echo "URL: $web_url"
+echo ""
+echo "=== Remote Description ==="
+echo "$remote_description"
+echo ""
+
+if [[ "$local_description" == "$remote_description" ]]; then
+    echo "=== Status ==="
+    echo "Descriptions match. No update needed."
+else
+    echo "=== Status ==="
+    echo "Descriptions differ. Updating remote MR..."
+    echo ""
+
+    # Update the MR with the local description
+    if glab mr update "$current_branch" --description "$local_description" --yes; then
+        echo "MR description updated successfully!"
+    else
+        echo "Error: Failed to update MR description"
+        exit 1
+    fi
+fi

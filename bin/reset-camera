@@ -1,0 +1,129 @@
+#!/bin/bash
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info()    { echo -e "${BLUE}$*${NC}"; }
+success() { echo -e "${GREEN}$*${NC}"; }
+warn()    { echo -e "${YELLOW}$*${NC}"; }
+error()   { echo -e "${RED}Error: $*${NC}" >&2; }
+
+check_dependency() {
+    if ! command -v "$1" &>/dev/null; then
+        error "'$1' is not installed. Please install it first."
+        exit 1
+    fi
+}
+
+show_help() {
+    cat <<'EOF'
+Usage: reset-camera [OPTIONS]
+
+Reset the Intel IPU6 Camera HAL and verify the V4L2 relay without restarting the
+graphical session. The command requests sudo only for the camera service and
+root-owned HAL state.
+
+Options:
+  --help, -h    Show this help
+
+Examples:
+  reset-camera
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h) show_help; exit 0 ;;
+        *)         error "Unknown option: $1"; show_help; exit 1 ;;
+    esac
+done
+
+for dependency in sudo systemctl ipcrm gst-launch-1.0 python3 mktemp fuser timeout; do
+    check_dependency "$dependency"
+done
+
+service="v4l2-relayd@default.service"
+raw_file=$(mktemp --tmpdir reset-camera.XXXXXX.raw)
+warmup_log=$(mktemp --tmpdir reset-camera.XXXXXX.log)
+relay_stopped=0
+
+cleanup() {
+    status=$?
+    trap - EXIT INT TERM
+    if [[ "$relay_stopped" -eq 1 ]]; then
+        sudo systemctl start "$service" || true
+    fi
+    rm -f "$raw_file" "$warmup_log"
+    exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+if ! systemctl cat "$service" &>/dev/null; then
+    error "$service is unavailable."
+    exit 1
+fi
+
+camera_users=$(fuser /dev/video0 2>/dev/null || true)
+if [[ -n "$camera_users" ]]; then
+    warn "Camera clients are using /dev/video0 and will lose their stream: $camera_users"
+fi
+
+info "Authenticating for the IPU6 camera reset..."
+sudo -v
+
+info "Stopping the camera relay..."
+sudo systemctl stop "$service"
+relay_stopped=1
+
+info "Removing stale Camera HAL shared memory..."
+sudo ipcrm -M 0x0043414d 2>/dev/null || true
+
+info "Warming the IPU6 sensor directly..."
+if ! sudo timeout 30 gst-launch-1.0 -q \
+    icamerasrc buffer-count=7 num-buffers=10 \
+    ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 \
+    ! fakesink sync=false 2>&1 | tee "$warmup_log" >/dev/null; then
+    error "Direct IPU6 warmup failed:"
+    tail -n 30 "$warmup_log" >&2
+    exit 1
+fi
+
+info "Starting the camera relay..."
+sudo systemctl start "$service"
+relay_stopped=0
+
+if ! systemctl is-active --quiet "$service"; then
+    error "$service did not become active."
+    exit 1
+fi
+
+info "Checking relayed camera frames..."
+timeout 30 gst-launch-1.0 -q \
+    v4l2src device=/dev/video0 num-buffers=15 \
+    ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 \
+    ! videoconvert \
+    ! videoscale \
+    ! video/x-raw,format=RGB,width=320,height=180 \
+    ! filesink location="$raw_file"
+
+python3 - "$raw_file" <<'PY'
+import pathlib
+import sys
+
+frame_size = 320 * 180 * 3
+data = pathlib.Path(sys.argv[1]).read_bytes()
+if len(data) < frame_size:
+    raise SystemExit("camera produced an incomplete verification frame")
+frame = data[-frame_size:]
+spread = max(frame) - min(frame)
+colors = len(set(frame))
+print(f"frame spread={spread}, channel values={colors}")
+if spread <= 16 or colors <= 16:
+    raise SystemExit("camera relay is still producing a blank frame")
+PY
+
+success "Intel MIPI camera relay is producing non-blank frames."

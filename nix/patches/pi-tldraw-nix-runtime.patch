@@ -1,0 +1,298 @@
+diff -urN orig/src/host/local-host.ts new/src/host/local-host.ts
+--- orig/src/host/local-host.ts	2026-10-20 20:46:53.105924868 +0100
++++ new/src/host/local-host.ts	2026-10-20 20:46:53.117014571 +0100
+@@ -2,8 +2,18 @@
+ import { randomUUID } from 'node:crypto'
+ import { readFile } from 'node:fs/promises'
+ import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
++import { extname, resolve } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ 
++const TLDRAW_ASSETS_PREFIX = '/tldraw-assets/'
++const TLDRAW_ASSETS_DIR = fileURLToPath(new URL('../../static/tldraw-assets/', import.meta.url))
++const ASSET_TYPES: Record<string, string> = {
++	'.json': 'application/json; charset=utf-8',
++	'.svg': 'image/svg+xml',
++	'.png': 'image/png',
++	'.woff2': 'font/woff2',
++}
++
+ interface CanvasExecRequest {
+ 	id: string
+ 	code: string
+@@ -28,6 +38,7 @@
+ 		source?: string
+ 	}): Promise<void>
+ 	onRestore?(canvasId: string): Promise<{ shapes: unknown[]; assets?: unknown[]; bindings?: unknown[] } | null>
++	currentCanvasId?(): string | undefined // the pi session's canvas, so a freshly opened tab can restore it
+ }
+ 
+ const ROUTES = [
+@@ -59,6 +70,13 @@
+ 	let url: string | null = null
+ 	let port: number | null = null
+ 	let lastPollAt = 0
++	// Two tabs polling one queue split execs between them and race their autosaves, so the
++	// newest tab to load takes over and older ones are turned away.
++	let activeTab: string | null = null
++	const isStaleTab = (reqUrl: URL) => {
++		const tab = reqUrl.searchParams.get('tab')
++		return tab !== null && activeTab !== null && tab !== activeTab
++	}
+ 	const logs: string[] = []
+ 	const queue: CanvasExecRequest[] = []
+ 	const pending = new Map<string, PendingExec>()
+@@ -173,20 +191,26 @@
+ 			const body = await readFile(path, 'utf8')
+ 			return send(res, 200, body, 'application/javascript; charset=utf-8')
+ 		},
+-		config: (_req, res) => sendJson(res, { endpoint, resourceUri, cwd, canvasDir }),
++		config: (_req, res, reqUrl) => {
++			const tab = reqUrl.searchParams.get('tab')
++			if (tab) activeTab = tab
++			return sendJson(res, { endpoint, resourceUri, cwd, canvasDir, canvasId: opts.currentCanvasId?.() })
++		},
+ 		status: (_req, res) => sendJson(res, getStatus()),
+ 		log: async (req, res) => {
+ 			const body = (await readJson(req)) as { level?: string; message?: string }
+ 			appendLog(`${body.level ?? 'log'} ${body.message ?? ''}`)
+ 			return sendJson(res, { ok: true })
+ 		},
+-		next: (_req, res) => {
++		next: (_req, res, reqUrl) => {
++			if (isStaleTab(reqUrl)) return sendJson(res, { superseded: true })
+ 			lastPollAt = Date.now()
+ 			const next = queue.shift() ?? null
+ 			if (next) appendLog(`dequeued ${next.id}: canvasId=${next.canvasId ?? 'new'}`)
+ 			return sendJson(res, next)
+ 		},
+-		autosave: async (req, res) => {
++		autosave: async (req, res, reqUrl) => {
++			if (isStaleTab(reqUrl)) return sendJson(res, { ok: false, error: 'This canvas is open in a newer tab' }, 409)
+ 			const body = (await readJson(req)) as {
+ 				canvasId?: string
+ 				state?: { shapes?: unknown[]; assets?: unknown[]; bindings?: unknown[] }
+@@ -254,6 +278,9 @@
+ 	async function handleRequest(req: IncomingMessage, res: ServerResponse) {
+ 		try {
+ 			const reqUrl = new URL(req.url ?? '/', 'http://127.0.0.1')
++			if (req.method === 'GET' && reqUrl.pathname.startsWith(TLDRAW_ASSETS_PREFIX)) {
++				return await sendTldrawAsset(res, reqUrl.pathname.slice(TLDRAW_ASSETS_PREFIX.length))
++			}
+ 			const route = routeFor(req.method, reqUrl.pathname)
+ 			if (!route) return send(res, 404, 'Not found', 'text/plain; charset=utf-8')
+ 			return await routeHandlers[route](req, res, reqUrl)
+@@ -270,6 +297,21 @@
+ 	return { ensureStarted, open, execOnCanvas, close, getStatus }
+ }
+ 
++// The widget's tldraw fetches fonts, icons and translations from cdn.tldraw.com; the nix build
++// rewrites that base to this route, which serves a pinned copy of @tldraw/assets instead.
++async function sendTldrawAsset(res: ServerResponse, relative: string) {
++	const file = resolve(TLDRAW_ASSETS_DIR, decodeURIComponent(relative))
++	if (!file.startsWith(TLDRAW_ASSETS_DIR)) return send(res, 404, 'Not found', 'text/plain; charset=utf-8')
++	let body: Buffer
++	try {
++		body = await readFile(file)
++	} catch {
++		return send(res, 404, 'Not found', 'text/plain; charset=utf-8')
++	}
++	res.writeHead(200, { 'content-type': ASSET_TYPES[extname(file)] ?? 'application/octet-stream', 'cache-control': 'max-age=86400' })
++	res.end(body)
++}
++
+ function sendJson(res: ServerResponse, value: unknown, status = 200) {
+ 	return send(res, status, JSON.stringify(value, null, 2), 'application/json; charset=utf-8')
+ }
+diff -urN orig/src/index.ts new/src/index.ts
+--- orig/src/index.ts	2026-10-20 20:46:53.105611797 +0100
++++ new/src/index.ts	2026-10-20 20:47:44.886874857 +0100
+@@ -69,7 +69,16 @@
+ 	return randomUUID().replace(/-/g, '').slice(0, 8)
+ }
+ 
+-export default function (pi: ExtensionAPI) {
++// Handles a wrapper extension gets back from this factory, so it can add session-aware canvas
++// behaviour (per-session canvas ids, restores on branch changes) without forking this file.
++export interface PiTldrawHooks {
++	canvasHost?: ReturnType<typeof createCanvasHost>
++	workflows?: ReturnType<typeof createCanvasWorkflows>
++	getSessionCanvasId?(): string | undefined
++	setSessionCanvasId?(canvasId: string): void
++}
++
++export default function (pi: ExtensionAPI, hooks: PiTldrawHooks = {}) {
+ 	const endpoint = process.env.TLDRAW_MCP_URL || DEFAULT_ENDPOINT
+ 	const serverManager = createMcpServerManager(endpoint)
+ 	const client = new TldrawMcpClient(endpoint, serverManager.ensure)
+@@ -80,6 +89,7 @@
+ 	const canvasHost = createCanvasHost(pi, endpoint, CANVAS_RESOURCE_URI, {
+ 		cwd: sessionCwd,
+ 		canvasDir: getCanvasDir(sessionCwd),
++		currentCanvasId: () => sessionCanvasId,
+ 		async onAutoSave({
+ 			canvasId,
+ 			state,
+@@ -113,6 +123,12 @@
+ 		rememberCanvasId,
+ 		createProjectCanvasId,
+ 	})
++	hooks.canvasHost = canvasHost
++	hooks.workflows = workflows
++	hooks.getSessionCanvasId = () => sessionCanvasId
++	hooks.setSessionCanvasId = (canvasId) => {
++		sessionCanvasId = canvasId
++	}
+ 
+ 	pi.registerTool({
+ 		name: 'tldraw_status',
+@@ -731,7 +747,7 @@
+ 	})
+ 
+ 	pi.registerCommand('tldraw', {
+-		description: 'Inspect/control tldraw MCP (/tldraw open|new|use [canvasId]|save|ls|list|canvases|current|host|status|reset).',
++		description: 'Open the canvas if no tab is connected and check tldraw MCP; or /tldraw open|new|use [canvasId]|save|ls|list|canvases|current|host|status|reset.',
+ 		handler: async (args, ctx) => {
+ 			const command = parseTldrawCommand(args)
+ 			const clearStatus = () => ctx.ui.setStatus('tldraw', undefined)
+@@ -848,6 +864,9 @@
+ 
+ 			try {
+ 				await commandHandlers[command.type]()
++				// A bare /tldraw is how people go to the canvas, so bring a tab up when none is polling;
++				// with one connected it stays a status check and never spawns a duplicate tab.
++				if (!args.trim() && !canvasHost.getStatus().browserConnected) await commandHandlers.open()
+ 			} catch (error) {
+ 				clearStatus()
+ 				statusIndicator.update(ctx, 'error')
+diff -urN orig/src/server/server-manager.ts new/src/server/server-manager.ts
+--- orig/src/server/server-manager.ts	2026-10-20 20:46:53.106077427 +0100
++++ new/src/server/server-manager.ts	2026-10-20 20:46:53.118309730 +0100
+@@ -1,7 +1,11 @@
+ import { spawn, type ChildProcess } from 'node:child_process'
+-import { existsSync } from 'node:fs'
++import { accessSync, constants, existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync } from 'node:fs'
++import { homedir } from 'node:os'
++import { join } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ 
++const DEV_SCRIPT = fileURLToPath(new URL('../../scripts/run-mcp-app-dev.mjs', import.meta.url))
++
+ export function createMcpServerManager(endpoint: string) {
+ 	let proc: ChildProcess | null = null
+ 	let starting: Promise<void> | null = null
+@@ -44,10 +48,17 @@
+ 
+ 		if (!proc || proc.exitCode !== null || proc.killed) {
+ 			lastError = null
+-			appendLog(`starting: cd ${appDir} && yarn dev`)
+-			const child = spawn('yarn', ['dev'], {
++			appendLog(`starting: cd ${appDir} && node ${DEV_SCRIPT}`)
++			// Run the dev script with pi's own node instead of `yarn dev` (yarn is not a runtime dependency),
++			// and keep wrangler off the network: no metrics, no npm update check, no cf.json geo lookup.
++			const child = spawn(process.execPath, [DEV_SCRIPT], {
+ 				cwd: appDir,
+-				env: { ...process.env },
++				env: {
++					WRANGLER_SEND_METRICS: 'false',
++					WRANGLER_HIDE_BANNER: 'true',
++					CLOUDFLARE_CF_FETCH_ENABLED: 'false',
++					...process.env,
++				},
+ 				stdio: ['ignore', 'pipe', 'pipe'],
+ 				detached: true,
+ 			})
+@@ -145,7 +156,32 @@
+ 
+ function resolveAppDir() {
+ 	if (process.env.TLDRAW_MCP_APP_DIR) return process.env.TLDRAW_MCP_APP_DIR
+-	return fileURLToPath(new URL('../../mcp-app', import.meta.url))
++	const packaged = fileURLToPath(new URL('../../mcp-app', import.meta.url))
++	try {
++		accessSync(packaged, constants.W_OK)
++		return packaged
++	} catch {
++		return writableMirror(packaged)
++	}
++}
++
++// wrangler dev writes .wrangler/ (bundles, Durable Object state) next to wrangler.toml, and the
++// packaged app dir is read-only in the nix store, so run it from a symlink mirror instead.
++function writableMirror(source: string) {
++	const state = process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state')
++	const mirror = join(state, 'pi-tldraw', 'mcp-app')
++	mkdirSync(mirror, { recursive: true })
++	const wanted = new Set(readdirSync(source))
++	for (const name of readdirSync(mirror)) {
++		if (name !== '.wrangler' && !wanted.has(name)) rmSync(join(mirror, name), { recursive: true, force: true })
++	}
++	for (const name of wanted) {
++		const tmp = join(mirror, `.${name}.${process.pid}.tmp`)
++		rmSync(tmp, { force: true })
++		symlinkSync(join(source, name), tmp)
++		renameSync(tmp, join(mirror, name)) // atomic swap, so a concurrent pi never sees the link missing
++	}
++	return mirror
+ }
+ 
+ function delay(ms: number) {
+diff -urN orig/static/host.html new/static/host.html
+--- orig/static/host.html	2026-10-20 20:46:53.106544239 +0100
++++ new/static/host.html	2026-10-20 20:46:53.118698585 +0100
+@@ -33,6 +33,7 @@
+ 		// Persist canvasId across reloads so we can restore after error recovery.
+ 		try { lastCanvasId = sessionStorage.getItem('pi-tldraw-canvasId') } catch {}
+ 		let needsRestore = lastCanvasId !== null
++		const tabId = crypto.randomUUID()
+ 		// Start inline so the later fullscreen update is a real context change.
+ 		// The tldraw MCP app initializes its React state to inline and only switches
+ 		// when it receives an onhostcontextchanged notification.
+@@ -182,7 +183,13 @@
+ 		}
+ 
+ 		async function init() {
+-			const config = await (await fetch('/api/config')).json()
++			const config = await (await fetch('/api/config?tab=' + tabId)).json()
++			// A brand-new tab has no canvas id of its own (sessionStorage is per tab), so take the one pi
++			// is on and restore it; this also replaces a stale id left over from an earlier session.
++			if (config.canvasId) {
++				lastCanvasId = config.canvasId
++				needsRestore = true
++			}
+ 			if (config.canvasDir) {
+ 				folderEl.textContent = '📁 ' + config.canvasDir
+ 				folderEl.title = config.canvasDir + (config.cwd ? '\ncwd: ' + config.cwd : '')
+@@ -282,7 +289,7 @@
+ 			autoSaveTimer = null
+ 			if (!payload) return
+ 			try {
+-				const response = await fetch('/api/autosave', {
++				const response = await fetch('/api/autosave?tab=' + tabId, {
+ 					method: 'POST',
+ 					headers: { 'content-type': 'application/json' },
+ 					body: JSON.stringify(payload),
+@@ -343,7 +350,9 @@
+ 							const restorePromise = client.request('tools/call', { name: 'exec', arguments: restoreArgs })
+ 							await delay(200)
+ 							await bridge.sendToolInput({ arguments: restoreArgs })
+-							await restorePromise
++							// The widget drops every later exec as a duplicate until it sees this one's result,
++							// so the first exec after a restore used to time out instead of drawing.
++							await bridge.sendToolResult(await restorePromise).catch(() => {})
+ 							log('status', 'Restored ' + data.snapshot.shapes.length + ' shape(s) after reload')
+ 							setStatus('Canvas restored · ' + lastCanvasId)
+ 						} else {
+@@ -354,7 +363,12 @@
+ 					}
+ 				}
+ 				try {
+-					const task = await (await fetch('/api/next')).json()
++					const task = await (await fetch('/api/next?tab=' + tabId)).json()
++					if (task?.superseded) {
++						setStatus('Opened in a newer tab · this one is idle')
++						iframe.style.opacity = '0.35'
++						return
++					}
+ 					if (!task) { await delay(500); continue }
+ 					try {
+ 						const result = await runExec(client, task)

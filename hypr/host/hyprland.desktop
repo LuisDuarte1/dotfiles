@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Hyprland (Home Manager)
+Comment=Hyprland from the pinned Home Manager profile
+Exec=/usr/local/bin/hm-hyprland-session
+TryExec=/usr/local/bin/hm-hyprland-session
+Type=Application
+DesktopNames=Hyprland

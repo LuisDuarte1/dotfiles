@@ -1,0 +1,118 @@
+#!/bin/bash
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info()    { echo -e "${BLUE}$*${NC}"; }
+success() { echo -e "${GREEN}$*${NC}"; }
+warn()    { echo -e "${YELLOW}$*${NC}"; }
+error()   { echo -e "${RED}Error: $*${NC}" >&2; }
+
+check_dependency() {
+    if ! command -v "$1" &>/dev/null; then
+        error "'$1' is not installed. Please install it first."
+        exit 1
+    fi
+}
+
+show_help() {
+    cat <<'HELP'
+Usage: dotfiles-sync [OPTIONS]
+
+Link pi resources and render the config files that tools rewrite at
+runtime. Safe to re-run; install.sh calls it, and so can overlays.
+
+Links every entry of pi/extensions and pi/agents into ~/.pi/agent/
+(real dirs, so overlays can add their own entries) and prunes dangling
+links there.
+
+Renders copies, deep-merged with overlay fragments (objects merge,
+arrays and scalars from later files win, files apply in name order):
+  pi/settings.json  + ~/.config/dotfiles/pi/settings.d/*.json
+                    + nix pi-extensions (~/.nix-profile/lib/pi-extensions)
+                    -> ~/.pi/agent/settings.json
+  pi/mcp.json       + ~/.config/dotfiles/pi/mcp.d/*.json
+                    -> ~/.pi/agent/mcp.json
+  zed/settings.json + ~/.config/dotfiles/zed/settings.d/*.json
+                    -> ~/.config/zed/settings.json
+
+Re-running resets runtime edits pi and zed made to those copies.
+
+Options:
+  -h, --help    Show this help
+HELP
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h) show_help; exit 0 ;;
+        *)         error "Unknown option: $1"; show_help; exit 1 ;;
+    esac
+done
+
+check_dependency jq
+
+DOTFILES_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd -P)"
+OVERLAY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles"
+PI_DIR="$HOME/.pi/agent"
+
+# A legacy whole-dir symlink would make the links below land inside this checkout,
+# so it is replaced by a real dir; real files already there are left alone.
+link_entries() {
+    local src="$1" dst="$2" entry
+    [[ -L "$dst" ]] && rm "$dst"
+    mkdir -p "$dst"
+    for entry in "$src"/*; do
+        [[ -e "$entry" ]] && ln -sfn "$entry" "$dst/$(basename "$entry")"
+    done
+    find "$dst" -maxdepth 1 -xtype l -delete
+}
+
+merge() {
+    local base="$1" fragments="$2" files=("$1") f
+    for f in "$fragments"/*.json; do
+        [[ -f "$f" ]] && files+=("$f")
+    done
+    jq -n 'reduce inputs as $f ({}; . * $f)' "${files[@]}"
+}
+
+write_file() {
+    local dst="$1" tmp
+    mkdir -p "$(dirname "$dst")"
+    tmp=$(mktemp "$dst.XXXXXX")
+    cat > "$tmp"
+    if [[ ! -s "$tmp" ]] || ! jq empty "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        error "refusing to write invalid JSON to $dst"
+        exit 1
+    fi
+    [[ -L "$dst" ]] && rm "$dst"
+    mv "$tmp" "$dst"
+    info "Rendered $dst"
+}
+
+link_entries "$DOTFILES_DIR/pi/extensions" "$PI_DIR/extensions"
+link_entries "$DOTFILES_DIR/pi/agents" "$PI_DIR/agents"
+link_entries "$DOTFILES_DIR/pi/prompts" "$PI_DIR/prompts"
+
+# Pi expands ~ and canonicalizes via realpathSync, so these paths stay
+# stable across nix store rebuilds.
+nix_pkgs=()
+for ext_dir in "$HOME"/.nix-profile/lib/pi-extensions/*/; do
+    [[ -d "$ext_dir" ]] && nix_pkgs+=("~/.nix-profile/lib/pi-extensions/$(basename "$ext_dir")")
+done
+nix_json=$(printf '%s\n' "${nix_pkgs[@]}" | jq -R 'select(length > 0)' | jq -s .)
+
+merge "$DOTFILES_DIR/pi/settings.json" "$OVERLAY_DIR/pi/settings.d" \
+    | jq --argjson nix "$nix_json" '.packages = ((.packages // []) + $nix | unique)' \
+    | write_file "$PI_DIR/settings.json"
+merge "$DOTFILES_DIR/pi/mcp.json" "$OVERLAY_DIR/pi/mcp.d" | write_file "$PI_DIR/mcp.json"
+merge "$DOTFILES_DIR/zed/settings.json" "$OVERLAY_DIR/zed/settings.d" \
+    | write_file "${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json"
+
+success "dotfiles synced"
