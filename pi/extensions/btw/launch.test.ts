@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import {
 	attachCommand,
 	cleanEnv,
 	forwardedFlags,
+	PANE_SCRIPT,
 	pickOpener,
 	piFlags,
 	sandboxArgv,
@@ -79,6 +81,20 @@ test("tmuxCommand runs the pane runner on the spec file, with luisd-style option
 	assert.equal(command[15], "/run/x.json");
 	assert.deepEqual(command.slice(16, 22), [";", "set-option", "-t", "btw-ab12", "key-table", "off"]);
 	assert.deepEqual(command.filter((arg) => arg !== ";" && arg.endsWith(";")), [], "tmux would split on these");
+});
+
+test("tmuxCommand keeps a failed runner's pane on screen and drops the session once the viewer detaches", () => {
+	const command = tmuxCommand({ socket, name: "btw-ab12", cwd: "/r", specFile: "/run/x.json", node: "/bin/node" });
+	const setup = command.join(" ");
+	assert.match(setup, /; set-option -t btw-ab12 remain-on-exit failed( |$)/);
+	assert.ok(
+		setup.endsWith("; set-hook -t btw-ab12 client-detached if-shell -F '#{pane_dead}' 'kill-session -t btw-ab12'"),
+		setup,
+	);
+});
+
+test("PANE_SCRIPT points at the pane runner shipped next to launch.ts", () => {
+	assert.ok(existsSync(PANE_SCRIPT), PANE_SCRIPT);
 });
 
 test("attachCommand opens kitty on the same tmux socket the session was created on", () => {

@@ -19,6 +19,7 @@ import {
 import {
 	forwardedFlags,
 	openSideWindow,
+	PANE_SCRIPT,
 	pickOpener,
 	piFlags,
 	piInvocation,
@@ -141,6 +142,10 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (!onPath("bwrap")) {
 			ctx.ui.notify("/btw needs bubblewrap (bwrap) to keep the checkout read-only", "error");
+			return;
+		}
+		if (!existsSync(PANE_SCRIPT)) {
+			ctx.ui.notify(`/btw: ${PANE_SCRIPT} is gone, so btw moved after this pi loaded it; run /reload`, "error");
 			return;
 		}
 		const forkPoint = ctx.isIdle() ? ctx.sessionManager.getLeafId() : idleLeaf;

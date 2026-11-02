@@ -8,7 +8,7 @@ import { ENV } from "./guard.ts";
 import { execOnWorkspace, findParentPlacement } from "./hyprland.ts";
 import type { PaneSpec } from "./pane.ts";
 
-const PANE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "pane.ts");
+export const PANE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "pane.ts");
 
 export type Opener = "kitty" | "tmux";
 
@@ -25,6 +25,13 @@ const SESSION_SETUP = (name: string) => [
 	["set-option", "-t", name, "mouse", "on"],
 	["bind-key", "-T", "off", "WheelUpPane", "if-shell", "-F", "#{||:#{pane_in_mode},#{mouse_any_flag}}", "send-keys -M", "copy-mode -e"],
 	["bind-key", "-T", "off", "WheelDownPane", "send-keys", "-M"],
+];
+
+// A runner that dies on startup would take the session down before kitty attaches, so the window
+// just flashes shut; keep the dead pane and its error on screen until the viewer detaches.
+const KEEP_FAILED = (name: string) => [
+	["set-option", "-t", name, "remain-on-exit", "failed"],
+	["set-hook", "-t", name, "client-detached", `if-shell -F '#{pane_dead}' 'kill-session -t ${name}'`],
 ];
 
 export function piInvocation(argv = process.argv, execPath = process.execPath): string[] {
@@ -150,7 +157,7 @@ export function tmuxSocket(env: NodeJS.ProcessEnv = process.env, uid = process.g
 export function tmuxCommand(opts: { socket: string; name: string; cwd: string; specFile: string; node?: string }): string[] {
 	const create = ["new-session", "-d", "-s", opts.name, "-x", "200", "-y", "50", "-c", opts.cwd];
 	const runner = [opts.node ?? process.execPath, PANE_SCRIPT, opts.specFile];
-	const setup = SESSION_SETUP(opts.name).flatMap((command) => [";", ...command]);
+	const setup = [...SESSION_SETUP(opts.name), ...KEEP_FAILED(opts.name)].flatMap((command) => [";", ...command]);
 	return ["tmux", "-S", opts.socket, ...create, ...runner, ...setup];
 }
 
