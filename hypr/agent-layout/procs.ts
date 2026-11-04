@@ -102,7 +102,7 @@ export async function readTmux(): Promise<TmuxState> {
 	return parseTmux(clients, panes, sessions);
 }
 
-// A pi under the luisd wrapper runs in a tmux pane whose tree never reaches the terminal,
+// A pi inside tmux runs in a pane whose process tree never reaches the terminal,
 // so a tmux client found below the terminal continues the walk into its session's panes.
 export function reachablePids(root: number, procs: ProcTable, tmux: TmuxState): Set<number> {
 	const seen = new Set<number>();

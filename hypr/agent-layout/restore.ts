@@ -45,7 +45,7 @@ export interface SpawnSpec {
 	warnings: string[];
 }
 
-// Interactive bash is what makes `pi` the bashrc function (auth refresh + luisd tmux wrapper),
+// Interactive bash is what makes `pi` the bashrc function (an overlay's auth refresh, say),
 // and `kitten run-shell` leaves a shell with kitty integration once pi exits.
 export function spawnSpec(agent: Agent, exists: (path: string) => boolean, home: string): SpawnSpec {
 	const warnings: string[] = [];

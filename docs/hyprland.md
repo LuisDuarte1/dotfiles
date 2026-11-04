@@ -150,8 +150,8 @@ configs load ahead of their built-in 1.5/2 fallback.
 Press Super+D and choose **Restore Agents** after logging in. It reopens every
 pi terminal from the previous Hyprland session on the same monitor and
 workspace, rebuilds the hy3 split/tab tree and its ratios, and resumes each
-terminal with `pi --session <file>` through the usual `pi` function, so auth
-and the luisd tmux wrapper still apply. **Restore Agents (choose snapshot)**
+terminal with `pi --session <file>` through the usual `pi` function, so any
+auth wrapper still applies. **Restore Agents (choose snapshot)**
 opens a rofi list of stored snapshots instead.
 
 How it works:
@@ -161,7 +161,7 @@ How it works:
   processes pick it up after `/reload` or a restart.
 - `agent-layout-snapshot.timer` (Hyprland only) runs `agent-layout snapshot`
   every minute. It maps each kitty window to its pi through the process tree
-  and tmux clients, and stores geometry under
+  (and tmux clients, for a pi running inside tmux), and stores geometry under
   `~/.local/state/agent-layout/snapshots`. It keeps the newest 5, plus the
   newest snapshot of the previous session so it survives rearranging before
   a restore.

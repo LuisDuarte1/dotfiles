@@ -176,9 +176,6 @@ export PSQL_PAGER='pspg'
 # go bins
 export PATH=$PATH:$HOME/go/bin
 
-# luisd
-[ -f "$HOME/luisd/plugins/shell.bash" ] && source "$HOME/luisd/plugins/shell.bash"
-
 # pi-web enables provider-native web search for this invocation; the extension is
 # always loaded (so old search sessions replay safely) but searching is opt-in.
 pi-web() {
