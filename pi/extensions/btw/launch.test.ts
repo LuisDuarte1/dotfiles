@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import test from "node:test";
 import {
-	attachCommand,
 	cleanEnv,
 	forwardedFlags,
+	kittyCommand,
 	PANE_SCRIPT,
 	pickOpener,
 	piFlags,
@@ -60,13 +61,15 @@ test("sandboxArgv mounts protected dirs read-only, hides daemon sockets, then ru
 	assert.deepEqual(argv.slice(sep + 1), ["node", "cli.js", "--session", "/s/btw/f.jsonl"]);
 });
 
-test("pickOpener: tmux is required; forced value, then kitty with a display, then plain tmux", () => {
+test("pickOpener: a forced opener must exist; kitty needs a display, not tmux; tmux is the fallback", () => {
 	const all = () => true;
 	assert.equal(pickOpener({ PI_BTW_OPENER: "tmux", WAYLAND_DISPLAY: "w" }, all), "tmux");
 	assert.equal(pickOpener({ WAYLAND_DISPLAY: "w" }, all), "kitty");
+	assert.equal(pickOpener({ WAYLAND_DISPLAY: "w" }, (bin) => bin === "kitty"), "kitty");
 	assert.equal(pickOpener({}, all), "tmux");
 	assert.equal(pickOpener({ DISPLAY: ":0" }, (bin) => bin === "tmux"), "tmux");
-	assert.equal(pickOpener({ WAYLAND_DISPLAY: "w", PI_BTW_OPENER: "kitty" }, (bin) => bin === "kitty"), undefined);
+	assert.equal(pickOpener({ WAYLAND_DISPLAY: "w", PI_BTW_OPENER: "kitty" }, (bin) => bin === "tmux"), undefined);
+	assert.equal(pickOpener({}, (bin) => bin === "kitty"), undefined);
 });
 
 const socket = "/tmp/tmux-1000/default";
@@ -97,12 +100,22 @@ test("PANE_SCRIPT points at the pane runner shipped next to launch.ts", () => {
 	assert.ok(existsSync(PANE_SCRIPT), PANE_SCRIPT);
 });
 
-test("attachCommand opens kitty on the same tmux socket the session was created on", () => {
-	assert.deepEqual(attachCommand({ socket, name: "btw-ab12", title: "btw: q" }), [
-		"kitty", "-T", "btw: q", "tmux", "-S", socket, "attach-session", "-t", "btw-ab12",
-	]);
+test("kittyCommand runs the pane runner itself in kitty, held open only when it fails", () => {
+	const command = kittyCommand({ cwd: "/r", title: "btw: q", specFile: "/run/x.json", node: "/bin/node" });
+	assert.deepEqual(command.slice(0, 7), ["kitty", "--directory", "/r", "-T", "btw: q", "sh", "-c"]);
+	assert.deepEqual(command.slice(8), ["btw", "/bin/node", PANE_SCRIPT, "/run/x.json"]);
+	assert.match(command[7], /^trap : INT; "\$@" \|\| \{ printf .*; read -r _; \}$/);
 	assert.equal(tmuxSocket({}, 1000), "/tmp/tmux-1000/default");
 	assert.equal(tmuxSocket({ TMUX_TMPDIR: "/run/x" }, 7), "/run/x/tmux-7/default");
+});
+
+test("kittyCommand's shell waits for Enter after a failed runner and stays quiet after a clean exit", () => {
+	const hold = (runner: string[]) => {
+		const [, , , , , sh, flag, script, name] = kittyCommand({ cwd: "/r", title: "t", specFile: "/s" });
+		return execFileSync(sh, [flag, script, name, ...runner], { input: "\n", encoding: "utf8" });
+	};
+	assert.match(hold(["sh", "-c", "exit 3"]), /side window failed \(status 3\); press Enter to close $/);
+	assert.equal(hold(["true"]), "");
 });
 
 test("shellQuote quotes only what needs it", () => {

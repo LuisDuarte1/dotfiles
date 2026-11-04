@@ -194,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 			const opener = pickOpener(process.env, onPath);
 			if (!opener) {
 				const command = question ? [...sandbox, "--", question] : sandbox;
-				ctx.ui.notify(`btw: tmux not found; run this yourself:\n${shellQuote(command)}`, "warning");
+				ctx.ui.notify(`btw: no kitty on a display and no tmux; run this yourself:\n${shellQuote(command)}`, "warning");
 				return;
 			}
 			const spec = {

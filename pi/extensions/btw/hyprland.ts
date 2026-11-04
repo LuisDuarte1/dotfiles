@@ -74,7 +74,7 @@ async function output(command: string, args: string[]): Promise<string> {
 	return stdout.trim();
 }
 
-// The parent pi usually lives in a tmux pane whose process tree never reaches the terminal, so
+// A parent pi inside tmux lives in a pane whose process tree never reaches the terminal, so
 // the terminal is found through the tmux clients attached to the parent's session instead.
 async function parentPids(env: NodeJS.ProcessEnv): Promise<Set<number>> {
 	const roots = [process.pid];

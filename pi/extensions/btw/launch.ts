@@ -16,8 +16,8 @@ const FORWARDED_VALUE_FLAGS = new Set(["--mcp-profile"]);
 const FORWARDED_BOOLEAN_FLAGS = new Set(["--web-search"]);
 const STRIPPED_ENV = /^(TMUX|TMUX_PANE|LUISD_.*|KITTY_WINDOW_ID|KITTY_PID|KITTY_LISTEN_ON|PI_BTW_.*)$/;
 
-// Same per-session setup as the luisd pi wrapper, so the btw window behaves like your other pi
-// windows: every key goes to pi, and the mouse wheel scrolls tmux's scrollback.
+// Headless fallback only: every key goes to pi, and the mouse wheel reaches pi or tmux's
+// scrollback. With a display the runner gets kitty to itself, so nothing filters its escapes.
 const SESSION_SETUP = (name: string) => [
 	["set-option", "-t", name, "key-table", "off"],
 	["set-option", "-t", name, "prefix", "None"],
@@ -142,10 +142,10 @@ export function sandboxArgv(spec: SandboxSpec): string[] {
 }
 
 export function pickOpener(env: NodeJS.ProcessEnv, has: (bin: string) => boolean): Opener | undefined {
-	if (!has("tmux")) return undefined;
 	const forced = env.PI_BTW_OPENER;
-	if (forced === "kitty" || forced === "tmux") return forced;
-	return (env.WAYLAND_DISPLAY || env.DISPLAY) && has("kitty") ? "kitty" : "tmux";
+	if (forced === "kitty" || forced === "tmux") return has(forced) ? forced : undefined;
+	if ((env.WAYLAND_DISPLAY || env.DISPLAY) && has("kitty")) return "kitty";
+	return has("tmux") ? "tmux" : undefined;
 }
 
 export function tmuxSocket(env: NodeJS.ProcessEnv = process.env, uid = process.getuid?.() ?? 0): string {
@@ -161,13 +161,20 @@ export function tmuxCommand(opts: { socket: string; name: string; cwd: string; s
 	return ["tmux", "-S", opts.socket, ...create, ...runner, ...setup];
 }
 
-export function attachCommand(opts: { socket: string; name: string; title: string }): string[] {
-	return ["kitty", "-T", opts.title, "tmux", "-S", opts.socket, "attach-session", "-t", opts.name];
+// Kitty closes the window as soon as its child exits, so a runner that dies on startup would
+// flash shut; the shell keeps the error up until Enter, and `trap :` lets Ctrl+C reach only pi.
+const HOLD_ON_FAILURE = 'trap : INT; "$@" || { printf "\\n[btw] side window failed (status %s); press Enter to close " "$?"; read -r _; }';
+
+export function kittyCommand(opts: { cwd: string; title: string; specFile: string; node?: string }): string[] {
+	const runner = [opts.node ?? process.execPath, PANE_SCRIPT, opts.specFile];
+	return ["kitty", "--directory", opts.cwd, "-T", opts.title, "sh", "-c", HOLD_ON_FAILURE, "btw", ...runner];
 }
 
 export function shellQuote(args: readonly string[]): string {
 	return args.map((arg) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`)).join(" ");
 }
+
+const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 function run(command: string[], env: Record<string, string>, cwd: string): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -189,32 +196,33 @@ export async function openSideWindow(
 ): Promise<string> {
 	const env = cleanEnv(process.env);
 	const name = `btw-${opts.id}`;
-	const socket = tmuxSocket();
 	const dir = path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "pi-btw");
 	await mkdir(dir, { recursive: true, mode: 0o700 });
 	const specFile = path.join(dir, `${opts.id}.json`);
 	await writeFile(specFile, JSON.stringify({ ...opts.spec, env } satisfies PaneSpec), { mode: 0o600 });
+	let kittyFailure = "";
+	if (opener === "kitty") {
+		const command = kittyCommand({ cwd: opts.cwd, title: opts.title, specFile });
+		const placement = await findParentPlacement();
+		if (placement) {
+			const placed = await execOnWorkspace(shellQuote(command), placement).then(
+				() => true,
+				() => false,
+			);
+			if (placed) return `a kitty window on workspace ${placement.workspace.name}`;
+		}
+		try {
+			await run([command[0], "--detach", ...command.slice(1)], env, opts.cwd);
+			return "a kitty window";
+		} catch (error) {
+			kittyFailure = `kitty failed (${reason(error)}); `;
+		}
+	}
 	try {
-		await run(tmuxCommand({ socket, name, cwd: opts.cwd, specFile }), env, opts.cwd);
+		await run(tmuxCommand({ socket: tmuxSocket(), name, cwd: opts.cwd, specFile }), env, opts.cwd);
 	} catch (error) {
 		await rm(specFile, { force: true });
-		throw error;
+		throw kittyFailure ? new Error(`${kittyFailure}tmux: ${reason(error)}`) : error;
 	}
-	if (opener === "tmux") return `tmux session ${name} (attach: tmux attach -t ${name})`;
-	const attach = attachCommand({ socket, name, title: opts.title });
-	const placement = await findParentPlacement();
-	if (placement) {
-		const placed = await execOnWorkspace(shellQuote(attach), placement).then(
-			() => true,
-			() => false,
-		);
-		if (placed) return `a kitty window on workspace ${placement.workspace.name} (tmux session ${name})`;
-	}
-	try {
-		await run([attach[0], "--detach", ...attach.slice(1)], env, opts.cwd);
-		return `a kitty window on tmux session ${name}`;
-	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
-		return `tmux session ${name}; kitty failed (${reason}), attach with: tmux attach -t ${name}`;
-	}
+	return `${kittyFailure}tmux session ${name} (attach: tmux attach -t ${name})`;
 }
