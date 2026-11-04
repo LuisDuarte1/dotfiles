@@ -64,6 +64,9 @@ in
       hyprlandPackage
     ] ++ (with pkgs; [
       grim
+      # Ubuntu's kitty 0.32 sends Enter/Tab/Backspace twice to kitty-keyboard-protocol apps
+      # (kitty#7136); /usr/bin/kitty stays for the i3 fallback.
+      kitty
       libnotify
       nwg-displays
       rofi
