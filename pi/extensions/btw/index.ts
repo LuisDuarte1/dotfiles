@@ -1,8 +1,11 @@
-import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { buildSideSession, sessionName } from "./fork.ts";
 import { git } from "./git.ts";
 import {
@@ -27,10 +30,21 @@ import {
 	sandboxHides,
 	shellQuote,
 } from "./launch.ts";
+import { DISABLE_PASTE_EVENTS, ENABLE_PASTE_EVENTS, type PasteResult, PasteReader } from "./paste.ts";
 import { planPromotion, writeRequest } from "./promote.ts";
 import { createSnapshot, currentTree, SNAPSHOT_BASE } from "./snapshot.ts";
 
 const STATUS_KEY = "btw";
+const PASTE_STALL_MS = 5000;
+const IMAGE_EXTENSIONS: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
+
+type TerminalInputResult = { consume?: boolean; data?: string } | undefined;
+
+function saveImage(mime: string, bytes: Buffer): string {
+	const file = path.join(os.tmpdir(), `pi-clipboard-${randomUUID()}.${IMAGE_EXTENSIONS[mime]}`);
+	writeFileSync(file, bytes, { mode: 0o600 });
+	return file;
+}
 
 function onPath(bin: string): boolean {
 	return (process.env.PATH ?? "").split(path.delimiter).some((dir) => dir && existsSync(path.join(dir, bin)));
@@ -68,13 +82,50 @@ export default function (pi: ExtensionAPI) {
 		);
 	};
 
+	let stopPaste: (() => void) | undefined;
+	// A finished paste is handed back to pi as bracketed-paste input, so it reaches whatever has
+	// focus and renders like a real one; an image becomes its saved path, as Ctrl+V does outside.
+	const startPaste = (ctx: ExtensionContext) => {
+		stopPaste?.();
+		const reader = new PasteReader((data) => process.stdout.write(data));
+		const pasted = (result: PasteResult | undefined): TerminalInputResult => {
+			if (result?.kind === "error") ctx.ui.notify(`btw paste: ${result.message}`, "warning");
+			if (result?.kind !== "text" && result?.kind !== "image") return { consume: true };
+			const text = result.kind === "text" ? result.text : saveImage(result.mime, result.bytes);
+			return { data: `\x1b[200~${text}\x1b[201~` };
+		};
+		let stall: NodeJS.Timeout | undefined;
+		const unsubscribe = ctx.ui.onTerminalInput((data) => {
+			const outcome = reader.input(data);
+			if (outcome.consume) {
+				clearTimeout(stall);
+				if (reader.busy) stall = setTimeout(() => pasted(reader.abort("kitty stopped answering mid-paste")), PASTE_STALL_MS);
+				return pasted(outcome.result);
+			}
+			if (!matchesKey(data, "ctrl+v") || isKeyRelease(data)) return undefined;
+			const how = reader.supported ? "Ctrl+Shift+V (images too)" : "your terminal's paste shortcut (text only)";
+			ctx.ui.notify(`btw: the sandbox can't read the clipboard; paste with ${how}`, "info");
+			return { consume: true };
+		});
+		process.stdout.write(ENABLE_PASTE_EVENTS);
+		stopPaste = () => {
+			clearTimeout(stall);
+			unsubscribe();
+			process.stdout.write(DISABLE_PASTE_EVENTS);
+			stopPaste = undefined;
+		};
+	};
+
 	pi.on("session_start", (_event, ctx) => {
 		idleLeaf = ctx.sessionManager.getLeafId();
 		refresh(ctx);
+		if (mode.kind === "sandboxed" && ctx.mode === "tui") startPaste(ctx);
 		if (mode.kind === "unsandboxed" && ctx.hasUI) {
 			ctx.ui.notify(`btw side session opened outside its sandbox: only read-only tools work (${mode.info.origin})`, "warning");
 		}
 	});
+
+	pi.on("session_shutdown", () => stopPaste?.());
 
 	// before_agent_start fires before the prompt's user message is appended, so together with
 	// agent_settled this always holds the leaf of the last moment the agent was idle.
