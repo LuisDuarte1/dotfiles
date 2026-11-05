@@ -135,6 +135,23 @@ in
         exit 1
       fi
     '';
+    # nwg-displays rewrites this file on Apply, so it cannot be a store symlink; use-desc makes it
+    # pin modes to monitor models instead of ports, which another screen on that port can't take.
+    activation.nwgDisplaysUseDesc = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      nwg_config=${lib.escapeShellArg "${config.xdg.configHome}/nwg-displays/config"}
+      if [[ ! -s "$nwg_config" ]]; then
+        run mkdir -p "$(dirname "$nwg_config")"
+        run install -m644 ${pkgs.writeText "nwg-displays-config" (builtins.toJSON { use-desc = true; })} "$nwg_config"
+      elif [[ "$(${pkgs.jq}/bin/jq -r '."use-desc"' "$nwg_config" || true)" != true ]]; then
+        nwg_tmp=$(mktemp "$nwg_config.XXXXXX")
+        if ${pkgs.jq}/bin/jq '."use-desc" = true' "$nwg_config" > "$nwg_tmp"; then
+          run install -m644 "$nwg_tmp" "$nwg_config"
+        else
+          warnEcho "Could not enable use-desc in $nwg_config"
+        fi
+        rm -f "$nwg_tmp"
+      fi
+    '';
   };
 
   programs.home-manager.enable = true;

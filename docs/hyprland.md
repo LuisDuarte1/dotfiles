@@ -145,6 +145,17 @@ no dedicated display-settings hotkey. Applying a layout writes mutable
 `~/.config/hypr/monitors.lua` and `workspaces.lua` files, which both Hyprland
 configs load ahead of their built-in 1.5/2 fallback.
 
+Modes are pinned to monitor models (`desc:`), never to ports. Activation turns on
+nwg-displays' `use-desc` for this. A port rule would force the Dell's 4K mode onto
+any screen plugged into DP-3. That modeset fails, and aquamarine's fallback then
+segfaults three times, which drops you back to GDM. Screens without a rule get
+their preferred mode.
+
+The fallback pins the P2723QE and U2723QE at 4K above the laptop. The laptop
+panel uses `auto-down` and unknown screens use `auto-up`, so whatever is plugged
+in ends up stacked against the panel and the cursor can cross. nwg-displays writes
+fixed offsets instead, which only fit the screens connected when you hit Apply.
+
 ## Agent restore
 
 Press Super+D and choose **Restore Agents** after logging in. It reopens every

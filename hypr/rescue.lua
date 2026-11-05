@@ -13,24 +13,30 @@ local monitorsLoaded = pcall(require, "monitors")
 pcall(require, "workspaces")
 
 if not monitorsLoaded then
-    hl.monitor({
-        output = "DP-3",
-        mode = "3840x2160@60",
-        position = "0x0",
-        scale = 1.5,
-    })
+    -- Pin the Dells by model, not port: forcing 4K onto another screen on DP-3 fails
+    -- the modeset, and aquamarine then segfaults on the fallback at login.
+    for _, model in ipairs({ "P2723QE", "U2723QE" }) do
+        hl.monitor({
+            output = "desc:Dell Inc. DELL " .. model,
+            mode = "3840x2160@60",
+            position = "0x0",
+            scale = 1.5,
+        })
+    end
 
+    -- Relative positions keep any screen stacked on the laptop: a fixed eDP-1 offset
+    -- leaves auto-placed screens touching it only at a corner, so the cursor can't cross.
     hl.monitor({
         output = "eDP-1",
         mode = "3840x2400@60",
-        position = "0x1440",
+        position = "auto-down",
         scale = 2,
     })
 
     hl.monitor({
         output = "",
         mode = "preferred",
-        position = "auto",
+        position = "auto-up",
         scale = "auto",
     })
 end
