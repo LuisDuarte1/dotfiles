@@ -1,7 +1,8 @@
 # Arch port plan for `LuisDuarte1/dotfiles`
 
 Status: the Arch/Hyprland port is still plan-only. The pi-only work in [section 13](#13-pi-only-phase-current-work)
-has been implemented, built, installed into the Nix profile, and synced into `~/.pi/agent`.
+has been implemented, built, installed into the Nix profile, and synced into `~/.pi/agent`; its
+machine-specific overlay is committed in `overlay/`.
 Checkout: `~/dotfiles` (private repo, branch `arch-port`, based on `main` @ `26f4d34`).
 Date: 2026-11-08.
 
@@ -251,19 +252,23 @@ esac
   - Use `nwg-displays` for monitors.
   - Keep the "second VT / i3 fallback / rollback" safety guidance.
 
-## 6. Local overlay (outside the repo)
+## 6. Committed variant overlay (`overlay/`)
 
-The repo intentionally supports an overlay under `~/.config/dotfiles`. Create it **before** running `dotfiles-sync`, because the sync renders `~/.pi/agent/settings.json` and `~/.config/zed/settings.json` from the repo.
+This variant commits its machine-specific overlay in `overlay/`. `bash/bashrc` and
+`bin/dotfiles-sync` read it before `${XDG_CONFIG_HOME:-~/.config}/dotfiles`, so an external
+overlay can still layer on top. Edit `overlay/` and commit it; do not leave the only copy in
+`~/.config/dotfiles`.
 
 ```
-~/.config/dotfiles/
+overlay/
 ├── bashrc.d/50-local.sh
 ├── pi/settings.d/10-local.json
 ├── pi/mcp.d/10-local.json          # optional
+├── pi/extensions.exclude
 └── zed/settings.d/10-local.json
 ```
 
-Suggested `bashrc.d/50-local.sh`:
+Committed `overlay/bashrc.d/50-local.sh` (also overrides `pi-web`, because `web-search` is excluded):
 
 ```bash
 alias code='zeditor'
@@ -272,10 +277,12 @@ alias clip-to-file='wl-paste >'
 export PATH="$HOME/.opencode/bin:$PATH"
 export PNPM_HOME="$HOME/.local/share/pnpm"
 case ":$PATH:" in *":$PNPM_HOME:"*) ;; *) export PATH="$PNPM_HOME:$PATH" ;; esac
+pi-web() { pi "$@"; }
+export -f pi-web
 # export GDK_SCALE=1   # uncomment if GTK apps are oversized on the 1080p fallback
 ```
 
-Suggested `pi/settings.d/10-local.json`:
+Committed `overlay/pi/settings.d/10-local.json`:
 
 ```json
 {
@@ -289,10 +296,10 @@ Suggested `pi/settings.d/10-local.json`:
 
 `pi-web-access` is no longer listed as an npm package: it comes from the Nix derivation and
 `dotfiles-sync` appends it. The repo's `web-search` extension must be excluded on this PC because
-both extensions register `web_search` (see section 13); `$OVERLAY/pi/extensions.exclude` contains
+both extensions register `web_search` (see section 13); `overlay/pi/extensions.exclude` contains
 `web-search`. The local chrome-devtools npm package is kept and the repo's Nix packages are appended.
 
-Suggested `zed/settings.d/10-local.json`:
+Committed `overlay/zed/settings.d/10-local.json`:
 
 ```json
 {
@@ -524,19 +531,22 @@ the second one:
 Tool "web_search" conflicts with /home/luisd/dotfiles/pi/extensions/web-search
 ```
 
-The repo now supports an overlay exclusion hook: `bin/dotfiles-sync` reads
-`~/.config/dotfiles/pi/extensions.exclude` (one extension name per line) and skips those links.
-On this PC that file contains `web-search`; `pi-web-access` is the web-search provider instead.
-The repo's `web-search` remains available for other machines.
+The repo supports an overlay exclusion hook: `bin/dotfiles-sync` reads
+`overlay/pi/extensions.exclude` and `~/.config/dotfiles/pi/extensions.exclude` (one extension name
+per line) and skips those links. The committed variant overlay contains `web-search`;
+`pi-web-access` is the web-search provider instead. The repo's `web-search` remains available for
+other machines.
 
-### Local pi overlay
+### Variant overlay
 
-Created outside the repo:
+Committed in `overlay/`:
 
-- `~/.config/dotfiles/pi/extensions.exclude` → `web-search`
-- `~/.config/dotfiles/pi/settings.d/10-local.json` → `opencode-go` /
+- `overlay/pi/extensions.exclude` → `web-search`
+- `overlay/pi/settings.d/10-local.json` → `opencode-go` /
   `deepseek-v4.1-flash`, opencode-go + llama-local model cycling, and the local
   `@narumitw/pi-chrome-devtools` npm package.
+- `overlay/zed/settings.d/10-local.json` → local Zed UI preferences.
+- `overlay/bashrc.d/50-local.sh` → local aliases, pnpm/opencode paths, and the `pi-web` override.
 
 Applied on 2026-11-08:
 
@@ -548,3 +558,5 @@ Applied on 2026-11-08:
 - Rendered `~/.pi/agent/settings.json` now lists the Nix `pi-web-access` path and not
   `npm:pi-web-access`; `web-search` is excluded; `pi list` and `pi --no-mcp --offline --list-models`
   both load cleanly.
+- Moved the temporary `~/.config/dotfiles` overlay into the repo `overlay/` directory; the repo copy
+  is now the source of truth.
