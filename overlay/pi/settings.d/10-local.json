@@ -1,0 +1,12 @@
+{
+  "defaultProvider": "opencode-go",
+  "defaultModel": "deepseek-v4.1-flash",
+  "defaultThinkingLevel": "high",
+  "enabledModels": [
+    "opencode-go/*",
+    "llama-local/*"
+  ],
+  "packages": [
+    "npm:@narumitw/pi-chrome-devtools"
+  ]
+}

@@ -128,11 +128,14 @@ export NVM_DIR="$HOME/.nvm"
 # ~/.bash_profile if it exists, otherwise ~/.profile (for login shells)
 # and ~/.bashrc (for interactive shells) :
 
-export PYENV_ROOT="$HOME/.pyenv"
-[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-eval "$(pyenv init - bash)"
-
-eval "$(pyenv virtualenv-init -)"
+if command -v pyenv >/dev/null; then
+    if [[ -d "$HOME/.pyenv" ]]; then
+        export PYENV_ROOT="$HOME/.pyenv"
+        export PATH="$PYENV_ROOT/bin:$PATH"
+    fi
+    eval "$(pyenv init - bash)"
+    eval "$(pyenv virtualenv-init -)"
+fi
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$PATH:$BUN_INSTALL/bin"
@@ -176,9 +179,6 @@ export PSQL_PAGER='pspg'
 # go bins
 export PATH=$PATH:$HOME/go/bin
 
-# luisd
-[ -f "$HOME/luisd/plugins/shell.bash" ] && source "$HOME/luisd/plugins/shell.bash"
-
 # pi-web enables provider-native web search for this invocation; the extension is
 # always loaded (so old search sessions replay safely) but searching is opt-in.
 pi-web() {
@@ -204,9 +204,12 @@ getbranch() {
 }
 export -f getbranch
 
-# Overlays (e.g. a private work repo) add shell config here instead of editing this file;
-# they load last so they can wrap or override anything above.
-for _dotfiles_rc in "${XDG_CONFIG_HOME:-$HOME/.config}"/dotfiles/bashrc.d/*.sh; do
+# This checkout's overlay loads first; an external overlay (e.g. a private work repo)
+# loads last so it can wrap or override anything above.
+_dotfiles_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd -P)"
+for _dotfiles_rc in \
+    "$_dotfiles_root"/overlay/bashrc.d/*.sh \
+    "${XDG_CONFIG_HOME:-$HOME/.config}"/dotfiles/bashrc.d/*.sh; do
     [ -r "$_dotfiles_rc" ] && . "$_dotfiles_rc"
 done
-unset _dotfiles_rc
+unset _dotfiles_rc _dotfiles_root

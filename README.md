@@ -19,11 +19,13 @@ rewrite at runtime.
 - `pi/extensions/`: subagents with a live inspector, background jobs (`bg_do`), `/btw` side
   sessions in git worktrees, auto-retry, MCP profiles, provider-native web search.
 - `hypr/agent-layout/`: snapshots and restores pi agent terminals together with their hy3 layout.
-- `nix/`: reproducible builds of pi and several pi extensions, with small patches.
+- `nix/`: reproducible builds of pi and several pi extensions, with small patches, including
+  `pi-web-access`.
 - `bin/`: review helpers for GitHub/GitLab (`solve-mr-comments`, `update-pr-description`, …).
 
 ## Overlays
 
-Machine- or employer-specific config belongs in a separate repo that layers on top of this one:
-shell drop-ins, settings fragments, an auth hook, extra pi extensions/agents. The hooks are listed
-in [AGENTS.md](AGENTS.md#overlay-hooks).
+This variant commits its machine-specific baseline in `overlay/` (pi/zed settings, extension
+exclusions, shell additions). A separate overlay repo can still layer on top through
+`${XDG_CONFIG_HOME:-~/.config}/dotfiles`; it loads after `overlay/`, so it can override it. The
+hooks are listed in [AGENTS.md](AGENTS.md#overlay-hooks).

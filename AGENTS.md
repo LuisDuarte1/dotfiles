@@ -34,11 +34,14 @@ Organized **by tool** -- each top-level directory corresponds to one program. Co
 
 ## Overlay hooks
 
-All overlay paths are optional; with none present everything behaves as standalone.
-`$OVERLAY` is `${XDG_CONFIG_HOME:-~/.config}/dotfiles`.
+All external overlay paths are optional; with none present everything behaves as standalone.
+`$OVERLAY` is `${XDG_CONFIG_HOME:-~/.config}/dotfiles`. This checkout also commits a baseline
+variant overlay in `overlay/`; `bash/bashrc` and `bin/dotfiles-sync` read it before `$OVERLAY`, so
+external overlays can still override it.
 
 | Hook | Consumed by | Contract |
 |------|-------------|----------|
+| `overlay/` | `bash/bashrc`, `bin/dotfiles-sync` | Committed baseline for this variant; external `$OVERLAY` fragments are merged after it |
 | `$OVERLAY/bashrc.d/*.sh` | `bash/bashrc` (last thing it does) | Sourced in name order; may wrap or override anything |
 | `$OVERLAY/pi/settings.d/*.json`, `$OVERLAY/pi/mcp.d/*.json` | `bin/dotfiles-sync` | Deep-merged over `pi/settings.json` / `pi/mcp.json` (later files win, arrays are replaced) |
 | `$OVERLAY/pi/extensions.exclude` | `bin/dotfiles-sync` | One extension name per line; matching entries in `pi/extensions` are not linked into `~/.pi/agent/extensions` |

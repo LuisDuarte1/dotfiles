@@ -29,17 +29,21 @@ runtime. Safe to re-run; install.sh calls it, and so can overlays.
 
 Links every entry of pi/extensions and pi/agents into ~/.pi/agent/
 (real dirs, so overlays can add their own entries) and prunes dangling
-links there. Names listed one per line in
-~/.config/dotfiles/pi/extensions.exclude are skipped.
+links there. Names listed one per line in overlay/pi/extensions.exclude
+or ~/.config/dotfiles/pi/extensions.exclude are skipped.
 
-Renders copies, deep-merged with overlay fragments (objects merge,
-arrays and scalars from later files win, files apply in name order):
-  pi/settings.json  + ~/.config/dotfiles/pi/settings.d/*.json
+Renders copies, deep-merged with this checkout's overlay fragments and
+then ~/.config/dotfiles fragments (objects merge, arrays and scalars
+from later files win, files apply in name order):
+  pi/settings.json  + overlay/pi/settings.d/*.json
+                    + ~/.config/dotfiles/pi/settings.d/*.json
                     + nix pi-extensions (~/.nix-profile/lib/pi-extensions)
                     -> ~/.pi/agent/settings.json
-  pi/mcp.json       + ~/.config/dotfiles/pi/mcp.d/*.json
+  pi/mcp.json       + overlay/pi/mcp.d/*.json
+                    + ~/.config/dotfiles/pi/mcp.d/*.json
                     -> ~/.pi/agent/mcp.json
-  zed/settings.json + ~/.config/dotfiles/zed/settings.d/*.json
+  zed/settings.json + overlay/zed/settings.d/*.json
+                    + ~/.config/dotfiles/zed/settings.d/*.json
                     -> ~/.config/zed/settings.json
 
 Re-running resets runtime edits pi and zed made to those copies.
@@ -59,19 +63,29 @@ done
 check_dependency jq
 
 DOTFILES_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd -P)"
+REPO_OVERLAY_DIR="$DOTFILES_DIR/overlay"
 OVERLAY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles"
 PI_DIR="$HOME/.pi/agent"
 
 # A legacy whole-dir symlink would make the links below land inside this checkout,
 # so it is replaced by a real dir; real files already there are left alone.
 link_entries() {
-    local src="$1" dst="$2" exclude="${3:-}" entry name
+    local src="$1" dst="$2"
+    shift 2
+    local exclude_files=("$@") entry name exclude skip
     [[ -L "$dst" ]] && rm "$dst"
     mkdir -p "$dst"
     for entry in "$src"/*; do
         [[ -e "$entry" ]] || continue
         name=$(basename "$entry")
-        if [[ -n "$exclude" && -f "$exclude" ]] && grep -qxF -- "$name" "$exclude"; then
+        skip=0
+        for exclude in "${exclude_files[@]}"; do
+            if [[ -f "$exclude" ]] && grep -qxF -- "$name" "$exclude"; then
+                skip=1
+                break
+            fi
+        done
+        if (( skip )); then
             [[ -L "$dst/$name" ]] && rm -f "$dst/$name"
             continue
         fi
@@ -81,9 +95,13 @@ link_entries() {
 }
 
 merge() {
-    local base="$1" fragments="$2" files=("$1") f
-    for f in "$fragments"/*.json; do
-        [[ -f "$f" ]] && files+=("$f")
+    local base="$1"
+    shift
+    local files=("$base") dir f
+    for dir in "$@"; do
+        for f in "$dir"/*.json; do
+            [[ -f "$f" ]] && files+=("$f")
+        done
     done
     jq -n 'reduce inputs as $f ({}; . * $f)' "${files[@]}"
 }
@@ -104,6 +122,7 @@ write_file() {
 }
 
 link_entries "$DOTFILES_DIR/pi/extensions" "$PI_DIR/extensions" \
+    "$REPO_OVERLAY_DIR/pi/extensions.exclude" \
     "$OVERLAY_DIR/pi/extensions.exclude"
 link_entries "$DOTFILES_DIR/pi/agents" "$PI_DIR/agents"
 link_entries "$DOTFILES_DIR/pi/prompts" "$PI_DIR/prompts"
@@ -116,11 +135,15 @@ for ext_dir in "$HOME"/.nix-profile/lib/pi-extensions/*/; do
 done
 nix_json=$(printf '%s\n' "${nix_pkgs[@]}" | jq -R 'select(length > 0)' | jq -s .)
 
-merge "$DOTFILES_DIR/pi/settings.json" "$OVERLAY_DIR/pi/settings.d" \
+merge "$DOTFILES_DIR/pi/settings.json" \
+    "$REPO_OVERLAY_DIR/pi/settings.d" "$OVERLAY_DIR/pi/settings.d" \
     | jq --argjson nix "$nix_json" '.packages = ((.packages // []) + $nix | unique)' \
     | write_file "$PI_DIR/settings.json"
-merge "$DOTFILES_DIR/pi/mcp.json" "$OVERLAY_DIR/pi/mcp.d" | write_file "$PI_DIR/mcp.json"
-merge "$DOTFILES_DIR/zed/settings.json" "$OVERLAY_DIR/zed/settings.d" \
+merge "$DOTFILES_DIR/pi/mcp.json" \
+    "$REPO_OVERLAY_DIR/pi/mcp.d" "$OVERLAY_DIR/pi/mcp.d" \
+    | write_file "$PI_DIR/mcp.json"
+merge "$DOTFILES_DIR/zed/settings.json" \
+    "$REPO_OVERLAY_DIR/zed/settings.d" "$OVERLAY_DIR/zed/settings.d" \
     | write_file "${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json"
 
 success "dotfiles synced"
