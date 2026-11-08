@@ -36,9 +36,12 @@
       # is a thin wrapper that calls this factory with pname/hashes/lockfile.
       piExtension = pkgs.callPackage ./nix/pi-extension.nix { };
 
+      piWebAccess = pkgs.callPackage ./nix/pi-web-access.nix { inherit piExtension; };
+
       pi-extensions = [
         (pkgs.callPackage ./nix/pi-autoresearch.nix { inherit piExtension; })
         (pkgs.callPackage ./nix/plannotator.nix { inherit piExtension; })
+        piWebAccess
         (pkgs.callPackage ./nix/pi-tldraw.nix { inherit piExtension; })
         (pkgs.callPackage ./nix/sleep-guard.nix { })
       ];
@@ -59,6 +62,7 @@
       # it in isolation, without dragging in unrelated failures.
       packages.${system} = {
         inherit pi-coding-agent;
+        pi-web-access = piWebAccess;
 
         default = pkgs.buildEnv {
           name = "dotfiles-deps";
