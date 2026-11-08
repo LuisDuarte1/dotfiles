@@ -204,11 +204,11 @@ getbranch() {
 }
 export -f getbranch
 
-# This checkout's overlay loads first; an external overlay (e.g. a private work repo)
+# This checkout's personal overlay loads first; an external overlay (e.g. a private work repo)
 # loads last so it can wrap or override anything above.
 _dotfiles_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd -P)"
 for _dotfiles_rc in \
-    "$_dotfiles_root"/overlay/bashrc.d/*.sh \
+    "$_dotfiles_root"/personal/bashrc.d/*.sh \
     "${XDG_CONFIG_HOME:-$HOME/.config}"/dotfiles/bashrc.d/*.sh; do
     [ -r "$_dotfiles_rc" ] && . "$_dotfiles_rc"
 done

@@ -25,7 +25,7 @@ rewrite at runtime.
 
 ## Overlays
 
-This variant commits its machine-specific baseline in `overlay/` (pi/zed settings, extension
+This variant commits its personal overlay in `personal/` (pi/zed settings, extension
 exclusions, shell additions). A separate overlay repo can still layer on top through
-`${XDG_CONFIG_HOME:-~/.config}/dotfiles`; it loads after `overlay/`, so it can override it. The
+`${XDG_CONFIG_HOME:-~/.config}/dotfiles`; it loads after `personal/`, so it can override it. The
 hooks are listed in [AGENTS.md](AGENTS.md#overlay-hooks).
