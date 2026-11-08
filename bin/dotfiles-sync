@@ -29,7 +29,8 @@ runtime. Safe to re-run; install.sh calls it, and so can overlays.
 
 Links every entry of pi/extensions and pi/agents into ~/.pi/agent/
 (real dirs, so overlays can add their own entries) and prunes dangling
-links there.
+links there. Names listed one per line in
+~/.config/dotfiles/pi/extensions.exclude are skipped.
 
 Renders copies, deep-merged with overlay fragments (objects merge,
 arrays and scalars from later files win, files apply in name order):
@@ -64,11 +65,17 @@ PI_DIR="$HOME/.pi/agent"
 # A legacy whole-dir symlink would make the links below land inside this checkout,
 # so it is replaced by a real dir; real files already there are left alone.
 link_entries() {
-    local src="$1" dst="$2" entry
+    local src="$1" dst="$2" exclude="${3:-}" entry name
     [[ -L "$dst" ]] && rm "$dst"
     mkdir -p "$dst"
     for entry in "$src"/*; do
-        [[ -e "$entry" ]] && ln -sfn "$entry" "$dst/$(basename "$entry")"
+        [[ -e "$entry" ]] || continue
+        name=$(basename "$entry")
+        if [[ -n "$exclude" && -f "$exclude" ]] && grep -qxF -- "$name" "$exclude"; then
+            [[ -L "$dst/$name" ]] && rm -f "$dst/$name"
+            continue
+        fi
+        ln -sfn "$entry" "$dst/$name"
     done
     find "$dst" -maxdepth 1 -xtype l -delete
 }
@@ -96,7 +103,8 @@ write_file() {
     info "Rendered $dst"
 }
 
-link_entries "$DOTFILES_DIR/pi/extensions" "$PI_DIR/extensions"
+link_entries "$DOTFILES_DIR/pi/extensions" "$PI_DIR/extensions" \
+    "$OVERLAY_DIR/pi/extensions.exclude"
 link_entries "$DOTFILES_DIR/pi/agents" "$PI_DIR/agents"
 link_entries "$DOTFILES_DIR/pi/prompts" "$PI_DIR/prompts"
 

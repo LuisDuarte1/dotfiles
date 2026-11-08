@@ -41,6 +41,7 @@ All overlay paths are optional; with none present everything behaves as standalo
 |------|-------------|----------|
 | `$OVERLAY/bashrc.d/*.sh` | `bash/bashrc` (last thing it does) | Sourced in name order; may wrap or override anything |
 | `$OVERLAY/pi/settings.d/*.json`, `$OVERLAY/pi/mcp.d/*.json` | `bin/dotfiles-sync` | Deep-merged over `pi/settings.json` / `pi/mcp.json` (later files win, arrays are replaced) |
+| `$OVERLAY/pi/extensions.exclude` | `bin/dotfiles-sync` | One extension name per line; matching entries in `pi/extensions` are not linked into `~/.pi/agent/extensions` |
 | `$OVERLAY/zed/settings.d/*.json` | `bin/dotfiles-sync` | Deep-merged over `zed/settings.json` |
 | `$OVERLAY/hooks/pi-auth` | `hypr/agent-layout`, `bin/solve-mr-comments` | Executable: `check` (exit 0 = valid), `login [--force]` (interactive), `env` (prints `export` lines) |
 | `~/.pi/agent/{extensions,agents}/*` | pi | Real dirs; `dotfiles-sync` links this repo's entries and prunes dangling links, overlays link their own |
