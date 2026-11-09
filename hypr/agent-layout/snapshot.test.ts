@@ -274,6 +274,16 @@ test("tryLock is exclusive and recovers from a dead owner", () => {
 	assert.ok(tryLock(file));
 });
 
+test("tryLock takes over an empty lock left by a failed write", () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "lock-"));
+	const file = path.join(dir, "lock");
+	writeFileSync(file, "");
+	const lock = tryLock(file);
+	assert.ok(lock);
+	assert.equal(tryLock(file), undefined);
+	assert.deepEqual(readdirSync(dir), ["lock"]);
+});
+
 test("execCommand records the pid that kitty inherits through exec", () => {
 	const spec = spawnSpec(agent("/s/a.jsonl", 0, { cwd: "/w" }), () => true, "/home/u");
 	assert.equal(

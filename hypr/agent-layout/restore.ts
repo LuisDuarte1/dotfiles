@@ -8,6 +8,7 @@ import { readLiveBeacons } from "./beacons.ts";
 import { type BuildOp, planBuild } from "./build.ts";
 import * as hypr from "./hypr.ts";
 import { processStartTime, readTmux, type TmuxState } from "./procs.ts";
+import { runtimeDir } from "./snapshot.ts";
 import { boundingBox, describeTree, inferTree, isEvenlySplit, leaves, type Node, targetRects } from "./tree.ts";
 import type { Agent, Beacon, HyprClient, HyprMonitor, MonitorInfo, Rect, Snapshot } from "./types.ts";
 
@@ -386,10 +387,10 @@ export async function restoreSnapshot(
 	if (!(await ensureAuth(log))) throw new Error("authentication is still expired; run `pi` once to log in");
 
 	const monitors = await hypr.monitors();
-	const runtimeDir = path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "agent-layout");
-	mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+	const runtime = runtimeDir();
+	mkdirSync(runtime, { recursive: true, mode: 0o700 });
 	const ctx: RestoreContext = {
-		runtimeDir,
+		runtimeDir: runtime,
 		log,
 		warnings,
 		addresses: new Map(),

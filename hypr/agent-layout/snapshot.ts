@@ -93,6 +93,10 @@ export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
 	return path.join(env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"), "agent-layout");
 }
 
+export function runtimeDir(env: NodeJS.ProcessEnv = process.env): string {
+	return path.join(env.XDG_RUNTIME_DIR || os.tmpdir(), "agent-layout");
+}
+
 export function snapshotDir(base: string = stateDir()): string {
 	return path.join(base, "snapshots");
 }

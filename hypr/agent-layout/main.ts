@@ -13,6 +13,7 @@ import {
 	describeSnapshot,
 	listSnapshots,
 	loadSnapshot,
+	runtimeDir,
 	type StoredSnapshot,
 	saveSnapshot,
 	stateDir,
@@ -38,7 +39,7 @@ The default restore source is the newest snapshot with agents from a previous
 Hyprland instance. Snapshots live in $XDG_STATE_HOME/agent-layout/snapshots.
 `;
 
-const lockFile = () => path.join(stateDir(), "lock");
+const lockFile = () => path.join(runtimeDir(), "lock");
 
 function logger(echo: boolean): (msg: string) => void {
 	const file = path.join(stateDir(), "restore.log");
