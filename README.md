@@ -31,3 +31,7 @@ in [AGENTS.md](AGENTS.md#overlay-hooks).
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+`pi/prompts/improve-codebase-architecture.md` and `pi/prompts/improve-codebase-architecture/`
+are adapted from Matt Pocock's [skills](https://github.com/mattpocock/skills), also MIT; his
+notice is in [that directory's LICENSE](pi/prompts/improve-codebase-architecture/LICENSE).
