@@ -27,3 +27,7 @@ rewrite at runtime.
 Machine- or employer-specific config belongs in a separate repo that layers on top of this one:
 shell drop-ins, settings fragments, an auth hook, extra pi extensions/agents. The hooks are listed
 in [AGENTS.md](AGENTS.md#overlay-hooks).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
