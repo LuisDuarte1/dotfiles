@@ -68,12 +68,15 @@ buildNpmPackage {
     runHook postInstall
   '';
 
-  # Keep signed thinking replayable after mid-output Anthropic fallbacks, and inline extension
-  # statuses into the footer's stats line when they fit; each patch's header says why.
+  # Keep signed thinking replayable after Anthropic fallbacks, rejoin soft wraps in selection copy,
+  # and inline extension statuses into the footer when they fit; each patch's header says why.
   postInstall = ''
     patch -p1 \
       -d $out/lib/pi-coding-agent/node_modules/@earendil-works/pi-ai \
       < ${../pi/patches/pi-ai-anthropic-midstream-fallback.patch}
+    patch -p1 \
+      -d $out/lib/pi-coding-agent/node_modules/@earendil-works/pi-tui \
+      < ${../pi/patches/pi-tui-soft-wrap-copy.patch}
     patch -p1 -d $out/lib/pi-coding-agent < ${../pi/patches/pi-footer-inline-statuses.patch}
   '';
 

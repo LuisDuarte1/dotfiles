@@ -1,0 +1,120 @@
+Rejoin soft-wrapped rows when copying a fullscreen selection.
+
+Selection copy turns every rendered row into a hard newline, so a URL or command wrapped by a
+narrow window pastes in broken pieces. Upstream declined it (earendil-works/pi#8019, #11660).
+wrapTextWithAnsi() now tags each continuation row with a zero-width APC holding the whitespace
+the wrap dropped; copy glues tagged rows back on, and applyLineResets() strips the tag before output.
+
+--- a/dist/components/markdown.js
++++ b/dist/components/markdown.js
+@@ -2,7 +2,7 @@
+ import markedCjkFriendly from "marked-cjk-friendly";
+ import { renderLatex } from "../latex.js";
+ import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.js";
+-import { applyBackgroundToLine, cjkPunctuationRegex, flattenLines, visibleWidth, wrapTextWithAnsi } from "../utils.js";
++import { applyBackgroundToLine, cjkPunctuationRegex, flattenLines, stripSoftWrapMarkers, visibleWidth, wrapTextWithAnsi } from "../utils.js";
+ const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
+ class MarkdownTokenizer extends Tokenizer {
+     url(src) {
+@@ -780,7 +780,7 @@
+      * consistently with the rest of the renderer.
+      */
+     wrapCellText(text, maxWidth, stylePrefix = "") {
+-        const lines = wrapTextWithAnsi(text, Math.max(1, maxWidth));
++        const lines = wrapTextWithAnsi(text, Math.max(1, maxWidth)).map(stripSoftWrapMarkers); // Cell rows sit beside other cells
+         return lines.map((line, index) => {
+             // Reset text styles after each non-final fragment, then restore the surrounding style before padding and borders.
+             const styleReset = index < lines.length - 1 ? "\x1b[22;23;24;25;27;28;29;39m" : "";
+--- a/dist/tui-alt-screen.js
++++ b/dist/tui-alt-screen.js
+@@ -7,7 +7,7 @@
+ import { getLayoutNode } from "./layout-node.js";
+ import { deleteAllKittyImages, deleteAllKittyPlacements, deleteKittyImage, getCapabilities, getKittyImagePlacement, getKittyImagePlacementRows, isImageLine, setCapabilities, } from "./terminal-image.js";
+ import { Container, CURSOR_MARKER, compositeTuiLine, dispatchMouseEvent, retargetMouseEvent, TuiBase, VIEWPORT_TUI, } from "./tui.js";
+-import { extractAnsiCode, getGraphemeCellRange, getOsc8LinkAtColumn, getWordSegmenter, sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, } from "./utils.js";
++import { extractAnsiCode, getGraphemeCellRange, getOsc8LinkAtColumn, getSoftWrapJoin, getWordSegmenter, sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, } from "./utils.js";
+ import { WheelScrollAccelerator } from "./wheel-scroll.js";
+ const ENTER_ALT_SCREEN = "\x1b[?1049h";
+ const EXIT_ALT_SCREEN = "\x1b[?1049l";
+@@ -1226,7 +1226,13 @@
+         for (let row = selection.start.row; row <= selection.end.row; row++) {
+             const line = sourceLines[row] ?? "";
+             const columns = this.getSelectionColumns(line, row, selection);
+-            lines.push(stripTerminalSequences(sliceByColumn(line, columns.start, Math.max(0, columns.end - columns.start), true)).trimEnd());
++            const softWrap = row > selection.start.row ? getSoftWrapJoin(line) : undefined;
++            const start = softWrap ? Math.max(columns.start, softWrap.column) : columns.start;
++            const text = stripTerminalSequences(sliceByColumn(line, start, Math.max(0, columns.end - start), true)).trimEnd();
++            if (softWrap)
++                lines.push(`${lines.pop()}${text ? softWrap.joiner + text : ""}`);
++            else
++                lines.push(text);
+         }
+         const text = lines.join("\n");
+         return text.length === 0 ? undefined : text;
+--- a/dist/tui.js
++++ b/dist/tui.js
+@@ -5,7 +5,7 @@
+ import { isKeyRelease, matchesKey } from "./keys.js";
+ import { parseOscColorResponse, parseTerminalColorSchemeReport, } from "./terminal-colors.js";
+ import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
+-import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.js";
++import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, stripSoftWrapMarkers, visibleWidth } from "./utils.js";
+ /**
+  * Dispatch an event to a component and retain the exact target and coordinate
+  * transform. Containers use this when forwarding events to nested children.
+@@ -1047,7 +1047,7 @@
+             const line = lines[i];
+             if (!isImageLine(line)) {
+                 // Cursor markers are internal render metadata and must never reach terminal output.
+-                lines[i] = normalizeTerminalOutput(line.replaceAll(CURSOR_MARKER, "")) + reset;
++                lines[i] = normalizeTerminalOutput(stripSoftWrapMarkers(line.replaceAll(CURSOR_MARKER, ""))) + reset;
+             }
+         }
+         return lines;
+--- a/dist/utils.js
++++ b/dist/utils.js
+@@ -975,7 +975,43 @@
+         wrapped.push(currentLine);
+     }
+     // Trailing whitespace can cause lines to exceed the requested width
+-    return wrapped.length > 0 ? wrapped.map((line) => line.trimEnd()) : [""];
++    return wrapped.length > 0 ? markSoftWraps(line, wrapped.map((line) => line.trimEnd())) : [""];
++}
++// Zero-width APC carrying the whitespace a soft wrap dropped, so selection copy can rejoin the rows;
++// applyLineResets() strips it before output, like CURSOR_MARKER.
++export const SOFT_WRAP_MARKER = "\x1b_pi:w;";
++const SOFT_WRAP_MARKER_REGEX = /\x1b_pi:w;[^\x07]*\x07/g;
++const WHITESPACE_CHAR_REGEX = /\s/;
++function markSoftWraps(source, lines) {
++    const text = stripTerminalSequences(source);
++    const marked = [];
++    let pos = 0;
++    for (let i = 0; i < lines.length; i++) {
++        const part = stripTerminalSequences(lines[i]);
++        let start = pos;
++        while (!text.startsWith(part, start) && WHITESPACE_CHAR_REGEX.test(text[start] ?? ""))
++            start++;
++        if (!text.startsWith(part, start))
++            return lines; // Unexpected wrap output: keep every row a hard line rather than guess
++        marked.push(i === 0 ? lines[i] : `${SOFT_WRAP_MARKER}${text.slice(pos, start)}\x07${lines[i]}`);
++        pos = start + part.length;
++    }
++    return marked;
++}
++export function stripSoftWrapMarkers(line) {
++    return line.includes(SOFT_WRAP_MARKER) ? line.replace(SOFT_WRAP_MARKER_REGEX, "") : line;
++}
++export function getSoftWrapJoin(line) {
++    const index = line.indexOf(SOFT_WRAP_MARKER);
++    if (index === -1)
++        return undefined;
++    const end = line.indexOf("\x07", index);
++    const prefix = line.slice(0, index);
++    // Only indentation or a gutter ("│ ") may precede the marker: text before it means side-by-side
++    // columns, whose rows must not be glued onto the previous row.
++    if (end === -1 || /[\p{L}\p{N}]/u.test(stripTerminalSequences(prefix)))
++        return undefined;
++    return { column: visibleWidth(prefix), joiner: line.slice(index + SOFT_WRAP_MARKER.length, end) };
+ }
+ export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+ /**
