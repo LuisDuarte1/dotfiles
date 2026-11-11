@@ -26,6 +26,7 @@ import {
 	pickOpener,
 	piFlags,
 	piInvocation,
+	runtimeDir,
 	sandboxArgv,
 	sandboxHides,
 	shellQuote,
@@ -236,9 +237,11 @@ export default function (pi: ExtensionAPI) {
 				forwarded: forwardedFlags(process.argv.slice(2)),
 				approve: new ProjectTrustStore(getAgentDir()).get(snap.origin) === true,
 			});
+			const openSocket = path.join(runtimeDir(), `${snap.id}.sock`);
 			const sandbox = sandboxArgv({
 				...snap,
 				hides: sandboxHides(process.env, process.getuid?.() ?? 0, existsSync),
+				open: { socket: openSocket, node: process.execPath, path: process.env.PATH ?? "" },
 				createdAt: info.createdAt,
 				command: [...invocation, "--session", sessionFile, ...flags],
 			});
@@ -258,6 +261,7 @@ export default function (pi: ExtensionAPI) {
 				rel: path.relative(snap.root, snap.cwd),
 				title: name,
 				hasGstuff: onPath("gstuff"),
+				openSocket,
 			};
 			const where = await openSideWindow(opener, { id: snap.id, cwd: snap.cwd, title: name, spec });
 			const history = side.forked ? "" : " (nothing to fork yet, fresh session)";

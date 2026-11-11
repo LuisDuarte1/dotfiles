@@ -9,11 +9,13 @@ import {
 	PANE_SCRIPT,
 	pickOpener,
 	piFlags,
+	runtimeDir,
 	sandboxArgv,
 	shellQuote,
 	tmuxCommand,
 	tmuxSocket,
 } from "./launch.ts";
+import { SHIM_DIR } from "./open.ts";
 
 test("forwardedFlags keeps mcp-profile and web-search, in both spellings, and stops at --", () => {
 	assert.deepEqual(
@@ -59,6 +61,30 @@ test("sandboxArgv mounts protected dirs read-only, hides daemon sockets, then ru
 	assert.match(sandbox, /--setenv PI_BTW_PROMOTABLE 1/);
 	assert.match(sandbox, /--chdir \/tmp\/pi-btw\/repo-1\/sub/);
 	assert.deepEqual(argv.slice(sep + 1), ["node", "cli.js", "--session", "/s/btw/f.jsonl"]);
+	assert.doesNotMatch(sandbox, /PI_BTW_OPEN_SOCKET|--setenv PATH/);
+});
+
+test("sandboxArgv binds the open bridge back in after hiding its dir and puts the shims first on PATH", () => {
+	const socket = "/run/user/1000/pi-btw/ab12.sock";
+	const argv = sandboxArgv({
+		origin: "/w/repo",
+		root: "/tmp/pi-btw/repo-1",
+		cwd: "/tmp/pi-btw/repo-1",
+		protect: ["/w/repo"],
+		hides: { dirs: ["/run/user/1000"], sockets: [] },
+		open: { socket, node: "/bin/node", path: "/usr/bin:/bin" },
+		createdAt: "now",
+		command: ["pi"],
+	});
+	const bind = argv.indexOf("--ro-bind-try");
+	assert.deepEqual(argv.slice(bind, bind + 3), ["--ro-bind-try", socket, socket]);
+	assert.ok(bind > argv.indexOf("--tmpfs"), "a bind before the tmpfs would be hidden by it");
+	const env = (name: string) => argv[argv.indexOf(name, argv.indexOf("--setenv")) + 1];
+	assert.equal(env("PI_BTW_OPEN_SOCKET"), socket);
+	assert.equal(env("PI_BTW_NODE"), "/bin/node");
+	assert.equal(env("PATH"), `${SHIM_DIR}:/usr/bin:/bin`);
+	assert.equal(env("BROWSER"), `${SHIM_DIR}/xdg-open`);
+	assert.equal(runtimeDir({ XDG_RUNTIME_DIR: "/run/user/7" }), "/run/user/7/pi-btw");
 });
 
 test("pickOpener: a forced opener must exist; kitty needs a display, not tmux; tmux is the fallback", () => {

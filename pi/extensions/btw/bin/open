@@ -1,0 +1,4 @@
+#!/bin/sh
+# The btw sandbox hides the desktop, so this hands the URL to the pane runner outside it,
+# which opens loopback http URLs in the user's browser and refuses everything else.
+exec "${PI_BTW_NODE:-node}" "$(dirname "$0")/../open.ts" "$@"

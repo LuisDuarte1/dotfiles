@@ -117,6 +117,7 @@ test("readOnlyHint only fires for EROFS output in sandboxed mode", () => {
 test("promptSection names origin and copy, and is absent when off", () => {
 	assert.match(promptSection(sandboxed) ?? "", /\/work\/repo.*read-only/);
 	assert.match(promptSection(sandboxed) ?? "", /\/tmp\/pi-btw\/repo-1234 is a snapshot/);
+	assert.match(promptSection(sandboxed) ?? "", /`open`\/`xdg-open` of an http:\/\/127\.0\.0\.1 or localhost URL/);
 	assert.match(promptSection(unsandboxed) ?? "", /outside its sandbox/);
 	assert.equal(promptSection({ kind: "off" }), undefined);
 });

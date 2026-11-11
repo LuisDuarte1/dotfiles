@@ -9,6 +9,8 @@ export const ENV = {
 	root: "PI_BTW_ROOT",
 	createdAt: "PI_BTW_CREATED_AT",
 	promotable: "PI_BTW_PROMOTABLE",
+	openSocket: "PI_BTW_OPEN_SOCKET",
+	node: "PI_BTW_NODE",
 } as const;
 
 export interface Promotion {
@@ -157,6 +159,7 @@ export function promptSection(mode: Mode): string | undefined {
 		`- Your working directory ${root} is a snapshot of ${origin}${when}: same git HEAD, same staged, unstaged and untracked changes.`,
 		"- Ignored files (dependencies, build output, .env) and submodule contents are NOT in the snapshot; install or build in your copy if needed.",
 		`- Paths under ${origin} in earlier messages refer to the same files under ${root}. Reading ${origin} shows the other agent's live, in-progress state.`,
+		"- The desktop is out of reach, except that `open`/`xdg-open` of an http://127.0.0.1 or localhost URL opens it in the user's browser.",
 		"- Answer the user's questions. Do not resume the earlier task unless asked.",
 	].join("\n");
 }

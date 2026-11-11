@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { BtwInfo } from "./guard.ts";
+import { closeOpen, openInBrowser, serveOpen } from "./open.ts";
 import { appendMarker, describePlan, planPromotion, readRequest, runPromotion } from "./promote.ts";
 
 export interface PaneSpec {
@@ -16,6 +17,7 @@ export interface PaneSpec {
 	rel: string;
 	title: string;
 	hasGstuff: boolean;
+	openSocket?: string; // absent in specs from a pi that loaded btw before the bridge existed
 }
 
 function runChild(argv: string[], env: Record<string, string>, cwd?: string): Promise<number> {
@@ -73,15 +75,26 @@ export async function main(specFile: string): Promise<void> {
 	const spec = JSON.parse(readFileSync(specFile, "utf8")) as PaneSpec;
 	rmSync(specFile, { force: true });
 	process.on("SIGINT", () => {}); // pi owns Ctrl+C; the runner must outlive it
-	for (let first = true; ; first = false) {
-		const argv = first && spec.question ? [...spec.sandbox, "--", spec.question] : spec.sandbox;
-		const code = await runChild(argv, spec.env);
-		const request = readRequest(spec.info.root);
-		if (!request) {
-			if (code !== 0) await ask(`\n[btw] pi exited with status ${code}; press Enter to close `);
-			return;
+	const { openSocket } = spec;
+	const bridge = openSocket
+		? await serveOpen(openSocket, (url) => openInBrowser(url, spec.env)).catch((error) => {
+				console.error(`[btw] no browser bridge for the sandbox: ${message(error)}`);
+				return undefined;
+			})
+		: undefined;
+	try {
+		for (let first = true; ; first = false) {
+			const argv = first && spec.question ? [...spec.sandbox, "--", spec.question] : spec.sandbox;
+			const code = await runChild(argv, spec.env);
+			const request = readRequest(spec.info.root);
+			if (!request) {
+				if (code !== 0) await ask(`\n[btw] pi exited with status ${code}; press Enter to close `);
+				return;
+			}
+			if (await promote(spec, request.slug)) return;
 		}
-		if (await promote(spec, request.slug)) return;
+	} finally {
+		if (bridge && openSocket) closeOpen(bridge, openSocket);
 	}
 }
 

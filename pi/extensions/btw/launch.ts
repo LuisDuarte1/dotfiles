@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV } from "./guard.ts";
 import { execOnWorkspace, findParentPlacement } from "./hyprland.ts";
+import { SHIM_DIR } from "./open.ts";
 import type { PaneSpec } from "./pane.ts";
 
 export const PANE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "pane.ts");
@@ -102,14 +103,38 @@ export function sandboxHides(
 	};
 }
 
+export interface OpenBridge {
+	socket: string;
+	node: string;
+	path: string;
+}
+
 export interface SandboxSpec {
 	origin: string;
 	root: string;
 	cwd: string;
 	protect: string[];
 	hides: SandboxHides;
+	open?: OpenBridge;
 	createdAt: string;
 	command: string[];
+}
+
+export function runtimeDir(env: NodeJS.ProcessEnv = process.env): string {
+	return path.join(env.XDG_RUNTIME_DIR || os.tmpdir(), "pi-btw");
+}
+
+// The socket sits in the hidden runtime dir and only exists once the pane runner listens, so it
+// is bound back in after the tmpfs, and skipped when someone runs this argv by hand.
+function openBridgeArgs(open: OpenBridge | undefined): string[] {
+	if (!open) return [];
+	return [
+		"--ro-bind-try", open.socket, open.socket,
+		"--setenv", ENV.openSocket, open.socket,
+		"--setenv", ENV.node, open.node,
+		"--setenv", "PATH", [SHIM_DIR, open.path].filter(Boolean).join(path.delimiter),
+		"--setenv", "BROWSER", path.join(SHIM_DIR, "xdg-open"),
+	];
 }
 
 export function piFlags(opts: { model?: string; thinking?: string; forwarded: string[]; approve: boolean }): string[] {
@@ -128,6 +153,7 @@ export function sandboxArgv(spec: SandboxSpec): string[] {
 		...spec.protect.flatMap((dir) => ["--ro-bind", dir, dir]),
 		...spec.hides.dirs.flatMap((dir) => ["--perms", "0700", "--tmpfs", dir]), // tmux refuses looser modes
 		...spec.hides.sockets.flatMap((socket) => ["--ro-bind", "/dev/null", socket]),
+		...openBridgeArgs(spec.open),
 		...UNSET_IN_SANDBOX.flatMap((name) => ["--unsetenv", name]),
 		"--die-with-parent",
 		"--setenv", ENV.sandbox, "1",
@@ -196,7 +222,7 @@ export async function openSideWindow(
 ): Promise<string> {
 	const env = cleanEnv(process.env);
 	const name = `btw-${opts.id}`;
-	const dir = path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), "pi-btw");
+	const dir = runtimeDir();
 	await mkdir(dir, { recursive: true, mode: 0o700 });
 	const specFile = path.join(dir, `${opts.id}.json`);
 	await writeFile(specFile, JSON.stringify({ ...opts.spec, env } satisfies PaneSpec), { mode: 0o600 });
