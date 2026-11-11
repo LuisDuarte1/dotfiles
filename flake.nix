@@ -6,6 +6,9 @@
     hunk = {
       url = "github:modem-dev/hunk";
       inputs.nixpkgs.follows = "nixpkgs";
+      # Nixpkgs 26.11 throws on x86_64-darwin, which bun2nix's default system list still names, and
+      # evaluating hunk then fails; this flake only targets Linux.
+      inputs.bun2nix.inputs.systems.url = "github:nix-systems/default-linux";
     };
     home-manager = {
       url = "github:nix-community/home-manager/7690127e7e1c90ab1dcaff525d0dafbeb7e14182";
