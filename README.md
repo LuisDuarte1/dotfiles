@@ -4,6 +4,11 @@ Linux (x86_64) workstation setup: i3 and Hyprland (hy3), Kitty, Zed, tmux, and t
 [pi](https://pi.dev) coding agent with local extensions. System packages come from a Nix flake,
 and config files are plain symlinks made by `install.sh`.
 
+> These are my personal dotfiles, shared as-is. They're tuned to my own machines and change
+> whenever I feel like it, so I'm not taking issues or feature requests, and nothing here is
+> supported. That said, you're very welcome to read, copy, fork or borrow any of it: do whatever
+> you like with it. If you run `install.sh`, read it first; it was written for my setup, not yours.
+
 ```bash
 git clone https://github.com/LuisDuarte1/dotfiles ~/dotfiles
 cd ~/dotfiles && ./install.sh
