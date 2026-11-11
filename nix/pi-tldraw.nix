@@ -1,5 +1,5 @@
 # pi-tldraw extension (https://github.com/zeebeeCoder/pi-tldraw): tldraw's MCP app as a local canvas.
-# Regenerate lockfile via `npm install --package-lock-only --omit=dev --ignore-scripts --legacy-peer-deps`.
+# Regenerate lockfile via `npm install --package-lock-only --omit=dev --ignore-scripts --legacy-peer-deps`, with npmOverrides as package.json's overrides.
 { lib, fetchurl, jq, piExtension }:
 let
   tldrawAssetsVersion = "5.1.1"; # the tldraw bundled into mcp-app/dist/mcp-app.html; bump with pi-tldraw
@@ -12,9 +12,15 @@ piExtension {
   pname = "pi-tldraw";
   version = "0.2.0";
   tarballHash = "sha512-CvvgvOAdGZ0yXfPtmLSq9BMGzW4G089+VVavScrXl7t55Vz6aqrt1qNCAWCzGMcS+UQmsgUvhCzpXZFR4WygCA==";
-  npmDepsHash = "sha256-Yu7KdZkalIZmE2dI9O3n7OUi4yj1d+CuIH+lt0pY04k=";
+  npmDepsHash = "sha256-4CAP56BJEEdeXRsqKO8NIMoTHxk4/UVm5GPERoJETGI=";
   lockfile = ./pi-tldraw-package-lock.json;
   extraNpmFlags = [ "--legacy-peer-deps" ]; # pi provides the pi-coding-agent peer, so don't vendor a second copy
+  # wrangler 4.75.0 and agents 0.5 pin undici, ws and the MCP SDK to releases with known advisories,
+  # and 0.2.0 is pi-tldraw's latest, so lift them here; drop this once pi-tldraw bumps wrangler.
+  npmOverrides = {
+    "@modelcontextprotocol/sdk" = "$@modelcontextprotocol/sdk";
+    miniflare = { undici = "^7.30.1"; ws = "^8.21.0"; };
+  };
   patches = [
     # Start the MCP worker with pi's node (no yarn), offline, from a writable mirror of mcp-app/;
     # serve pinned tldraw assets locally; hand the canvas host to our session-aware entry.ts.
