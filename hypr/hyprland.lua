@@ -35,6 +35,13 @@ if not monitorsLoaded then
     })
 
     hl.monitor({
+        output = "desc:Microstep MAG 274U E16M",
+        mode = "3840x2160@60",
+        position = "auto-left",
+        scale = 1.5,
+    })
+
+    hl.monitor({
         output = "",
         mode = "preferred",
         position = "auto-up",
