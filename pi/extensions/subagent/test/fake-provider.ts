@@ -135,8 +135,8 @@ export default function (pi: ExtensionAPI) {
 			}
 			const offline = /OFFLINE(\d+)/.exec(task)?.[1];
 			if (offline && flakes < Number(offline)) {
-				flakes++;
-				return reply(m, [], { stopReason: "error", errorMessage: "Connection error.: getaddrinfo EAI_AGAIN gateway.example" });
+				const errors = ["Connection error.: getaddrinfo EAI_AGAIN gateway.example", "terminated: read ECONNRESET"];
+				return reply(m, [], { stopReason: "error", errorMessage: errors[flakes++ % errors.length] });
 			}
 			if (task.includes("FAIL")) {
 				return reply(m, [], { stopReason: "error", errorMessage: "boom from fake child" });

@@ -24,10 +24,10 @@ const STREAM_STOP_PATTERN = /stream ended before message_stop/i;
 const STREAM_STOP_BASE_MS = 2_000;
 const STREAM_STOP_JITTER_MS = 3_000;
 
-// This machine's own network failing (DNS, no route) says nothing about provider load, so these
-// retry on the flat base delay and pick up again as soon as the link is back.
+// This machine's own network failing (DNS, no route, resets) says nothing about provider load, so
+// these retry on the flat base delay and pick up again as soon as the link is back.
 const LOCAL_NETWORK_PATTERN =
-  /\b(EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|ENETDOWN|EADDRNOTAVAIL|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT)\b/;
+  /\b(EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|ENETDOWN|EADDRNOTAVAIL|ETIMEDOUT|ECONNRESET|UND_ERR_CONNECT_TIMEOUT)\b/;
 
 // A dead connection otherwise hangs until pi's 5-minute idle timeout. Headers arrive only after
 // prefill, so each consecutive header timeout adds 10s to the deadline, up to 30s.
