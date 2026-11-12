@@ -135,7 +135,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			const offline = /OFFLINE(\d+)/.exec(task)?.[1];
 			if (offline && flakes < Number(offline)) {
-				const errors = ["Connection error.: getaddrinfo EAI_AGAIN gateway.example", "terminated: read ECONNRESET"];
+				const errors = ["Connection error.: getaddrinfo EAI_AGAIN gateway.example", "terminated: read ECONNRESET", "Request timed out."];
 				return reply(m, [], { stopReason: "error", errorMessage: errors[flakes++ % errors.length] });
 			}
 			if (task.includes("FAIL")) {

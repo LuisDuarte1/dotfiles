@@ -74,14 +74,14 @@ test("a request without response headers in time is retried every 2s, with a dea
 	}
 });
 
-test("this machine's network errors retry on a flat delay instead of backing off", async () => {
+test("network errors and request timeouts retry on a flat delay instead of backing off", async () => {
 	const session = new RpcSession(sandbox, "fake/child");
 	try {
-		await session.send({ type: "prompt", message: "OFFLINE2 go" });
+		await session.send({ type: "prompt", message: "OFFLINE3 go" });
 		await session.waitFor((e) => e.type === "agent_settled");
 
 		const notices = session.events.filter((e) => e.type === "extension_ui_request" && /Retrying in/.test(e.message ?? ""));
-		assert.deepEqual(notices.map((e) => /Retrying in (\d+s)/.exec(e.message)?.[1]), ["2s", "2s"]);
+		assert.deepEqual(notices.map((e) => /Retrying in (\d+s)/.exec(e.message)?.[1]), ["2s", "2s", "2s"]);
 		assert.equal(finalAssistantText(session.events), "child done; users=[]");
 	} finally {
 		await session.close();

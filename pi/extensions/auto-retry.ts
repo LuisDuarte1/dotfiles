@@ -35,6 +35,10 @@ const HEADERS_TIMEOUT_MS = Number(process.env.PI_AUTO_RETRY_HEADERS_TIMEOUT_MS) 
 const MAX_HEADERS_TIMEOUT_MS = 30_000;
 const HEADERS_TIMEOUT_ERROR = "no response headers within";
 
+// "Request timed out." already sat out a deadline (ours for headers, or the SDK's own), so backing
+// off on top of it only delays the retry.
+const REQUEST_TIMEOUT_PATTERN = /request timed out/i;
+
 const RETRY_CUSTOM_TYPE = "auto-retry-kick";
 const STATUS_KEY = "auto-retry";
 const WIDGET_KEY = "auto-retry";
@@ -61,8 +65,13 @@ export interface AutoRetryEvent {
 }
 
 function computeDelayMs(attempt: number, errorMessage: string): number {
-  if (LOCAL_NETWORK_PATTERN.test(errorMessage)) return BASE_DELAY_MS;
-  if (errorMessage.startsWith(HEADERS_TIMEOUT_ERROR)) return BASE_DELAY_MS; // the wait for headers already spaced it out
+  if (
+    LOCAL_NETWORK_PATTERN.test(errorMessage) ||
+    REQUEST_TIMEOUT_PATTERN.test(errorMessage) ||
+    errorMessage.startsWith(HEADERS_TIMEOUT_ERROR)
+  ) {
+    return BASE_DELAY_MS;
+  }
   // Flat 2s + jitter (0..3s) for the message_stop cutoff, regardless of attempt.
   if (STREAM_STOP_PATTERN.test(errorMessage)) {
     return STREAM_STOP_BASE_MS + Math.floor(Math.random() * STREAM_STOP_JITTER_MS);
