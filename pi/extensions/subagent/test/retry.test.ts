@@ -35,10 +35,10 @@ const ANTHROPIC_REPLY = sse([
 	{ type: "message_stop" },
 ]);
 
-test("a request that gets no response headers in time is retried as a timeout", async () => {
+test("a request without response headers in time is retried with a deadline of 1x, 2x, then 3x the step", async () => {
 	const abandoned: Promise<void>[] = [];
 	const server = http.createServer((req, res) => {
-		if (abandoned.length === 0) {
+		if (abandoned.length < 3) {
 			abandoned.push(new Promise((resolve) => res.on("close", () => resolve())));
 			return;
 		}
@@ -59,17 +59,31 @@ test("a request that gets no response headers in time is retried as a timeout", 
 	const session = new RpcSession({ ...sandbox, env: { ...sandbox.env, PI_AUTO_RETRY_HEADERS_TIMEOUT_MS: "1000" } }, "local/m");
 	try {
 		await session.send({ type: "prompt", message: "hello" });
-		const notice = await session.waitFor((e) => e.type === "extension_ui_request" && /Retrying in/.test(e.message ?? ""));
 		await session.waitFor((e) => e.type === "agent_settled");
-		await abandoned[0];
+		await Promise.all(abandoned);
 
-		assert.match(notice.message, /no response headers within 1s/);
+		const notices = session.events.filter((e) => e.type === "extension_ui_request" && /Retrying in/.test(e.message ?? ""));
+		assert.deepEqual(notices.map((e) => /within (\d+s)/.exec(e.message)?.[1]), ["1s", "2s", "3s"]);
 		assert.equal(finalAssistantText(session.events), "recovered");
 	} finally {
 		await session.close();
 		server.closeAllConnections();
 		server.close();
 		fs.rmSync(path.join(sandbox.agentDir, "models.json"));
+	}
+});
+
+test("this machine's network errors retry on a flat delay instead of backing off", async () => {
+	const session = new RpcSession(sandbox, "fake/child");
+	try {
+		await session.send({ type: "prompt", message: "OFFLINE2 go" });
+		await session.waitFor((e) => e.type === "agent_settled");
+
+		const notices = session.events.filter((e) => e.type === "extension_ui_request" && /Retrying in/.test(e.message ?? ""));
+		assert.deepEqual(notices.map((e) => /Retrying in (\d+s)/.exec(e.message)?.[1]), ["2s", "2s"]);
+		assert.equal(finalAssistantText(session.events), "child done; users=[]");
+	} finally {
+		await session.close();
 	}
 });
 

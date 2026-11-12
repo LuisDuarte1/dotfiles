@@ -24,10 +24,15 @@ const STREAM_STOP_PATTERN = /stream ended before message_stop/i;
 const STREAM_STOP_BASE_MS = 2_000;
 const STREAM_STOP_JITTER_MS = 3_000;
 
+// This machine's own network failing (DNS, no route) says nothing about provider load, so these
+// retry on the flat base delay and pick up again as soon as the link is back.
+const LOCAL_NETWORK_PATTERN =
+  /\b(EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|ENETDOWN|EADDRNOTAVAIL|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT)\b/;
+
 // A dead connection otherwise hangs until pi's 5-minute idle timeout. Headers arrive only after
-// prefill, so each consecutive header timeout doubles the deadline to let a slow request through.
+// prefill, so each consecutive header timeout adds 10s to the deadline, up to 30s.
 const HEADERS_TIMEOUT_MS = Number(process.env.PI_AUTO_RETRY_HEADERS_TIMEOUT_MS) || 10_000;
-const MAX_HEADERS_TIMEOUT_MS = 160_000;
+const MAX_HEADERS_TIMEOUT_MS = 30_000;
 
 const RETRY_CUSTOM_TYPE = "auto-retry-kick";
 const STATUS_KEY = "auto-retry";
@@ -55,6 +60,7 @@ export interface AutoRetryEvent {
 }
 
 function computeDelayMs(attempt: number, errorMessage: string): number {
+  if (LOCAL_NETWORK_PATTERN.test(errorMessage)) return BASE_DELAY_MS;
   // Flat 2s + jitter (0..3s) for the message_stop cutoff, regardless of attempt.
   if (STREAM_STOP_PATTERN.test(errorMessage)) {
     return STREAM_STOP_BASE_MS + Math.floor(Math.random() * STREAM_STOP_JITTER_MS);
@@ -123,7 +129,7 @@ function isRetryable(message: {
   if (!message.errorMessage) return false;
   // Context overflow needs compaction, not retry — never loop on it.
   if (isContextOverflow(message as any, contextWindow)) return false;
-  return TRANSIENT_PATTERN.test(message.errorMessage);
+  return TRANSIENT_PATTERN.test(message.errorMessage) || LOCAL_NETWORK_PATTERN.test(message.errorMessage);
 }
 
 interface RetryState {
@@ -147,7 +153,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_provider_request", (_event, ctx) => {
     const baseUrl = ctx.model?.baseUrl;
     if (!baseUrl) return;
-    const ms = Math.min(HEADERS_TIMEOUT_MS * 2 ** headerTimeouts, MAX_HEADERS_TIMEOUT_MS);
+    const ms = Math.min(HEADERS_TIMEOUT_MS * (headerTimeouts + 1), MAX_HEADERS_TIMEOUT_MS);
     headerSlot.armed = {
       baseUrl,
       ms,

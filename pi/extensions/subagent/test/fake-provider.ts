@@ -133,6 +133,11 @@ export default function (pi: ExtensionAPI) {
 				flakes++;
 				return reply(m, [], { stopReason: "error", errorMessage: "fetch failed" });
 			}
+			const offline = /OFFLINE(\d+)/.exec(task)?.[1];
+			if (offline && flakes < Number(offline)) {
+				flakes++;
+				return reply(m, [], { stopReason: "error", errorMessage: "Connection error.: getaddrinfo EAI_AGAIN gateway.example" });
+			}
 			if (task.includes("FAIL")) {
 				return reply(m, [], { stopReason: "error", errorMessage: "boom from fake child" });
 			}
