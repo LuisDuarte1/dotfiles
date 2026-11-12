@@ -24,6 +24,11 @@ const STREAM_STOP_PATTERN = /stream ended before message_stop/i;
 const STREAM_STOP_BASE_MS = 2_000;
 const STREAM_STOP_JITTER_MS = 3_000;
 
+// A dead connection otherwise hangs until pi's 5-minute idle timeout. Headers arrive only after
+// prefill, so each consecutive header timeout doubles the deadline to let a slow request through.
+const HEADERS_TIMEOUT_MS = Number(process.env.PI_AUTO_RETRY_HEADERS_TIMEOUT_MS) || 10_000;
+const MAX_HEADERS_TIMEOUT_MS = 160_000;
+
 const RETRY_CUSTOM_TYPE = "auto-retry-kick";
 const STATUS_KEY = "auto-retry";
 const WIDGET_KEY = "auto-retry";
@@ -63,6 +68,50 @@ function fmtSeconds(ms: number): string {
   return `${(ms / 1000).toFixed(0)}s`;
 }
 
+interface HeaderDeadline {
+  baseUrl: string;
+  ms: number;
+  onTimeout(): void;
+  onHeaders(): void;
+}
+
+// SDK clients capture globalThis.fetch when built and /reload re-runs the factory, so fetch is
+// wrapped once per process and serves whichever instance armed the next provider request.
+const SLOT = Symbol.for("pi.auto-retry.header-deadline");
+
+function headerDeadlineSlot(): { armed?: HeaderDeadline } {
+  const g = globalThis as typeof globalThis & { [SLOT]?: { armed?: HeaderDeadline } };
+  if (g[SLOT]) return g[SLOT];
+  const slot: { armed?: HeaderDeadline } = {};
+  g[SLOT] = slot;
+  const inner = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const deadline = slot.armed;
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (!deadline || !url.startsWith(deadline.baseUrl)) return inner(input, init);
+    slot.armed = undefined;
+    const timer = new AbortController();
+    const outer = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    const id = setTimeout(() => {
+      deadline.onTimeout();
+      timer.abort(new Error(`no response headers within ${fmtSeconds(deadline.ms)} (timed out)`));
+    }, deadline.ms);
+    const signal = outer ? AbortSignal.any([outer, timer.signal]) : timer.signal;
+    return inner(input, { ...init, signal }).then(
+      (response) => {
+        clearTimeout(id);
+        deadline.onHeaders();
+        return response;
+      },
+      (error: unknown) => {
+        clearTimeout(id);
+        throw error;
+      },
+    );
+  };
+  return slot;
+}
+
 // Decide whether this failed assistant message should be auto-retried.
 // Mirrors pi's gating: error + matches transient regex + NOT a context overflow.
 function isRetryable(message: {
@@ -91,6 +140,26 @@ const QUEUE_POLL_MS = 250;
 
 export default function (pi: ExtensionAPI) {
   let state: RetryState | null = null;
+  const headerSlot = headerDeadlineSlot();
+  let headerTimeouts = 0;
+  let headerTimeoutMs: number | undefined;
+
+  pi.on("before_provider_request", (_event, ctx) => {
+    const baseUrl = ctx.model?.baseUrl;
+    if (!baseUrl) return;
+    const ms = Math.min(HEADERS_TIMEOUT_MS * 2 ** headerTimeouts, MAX_HEADERS_TIMEOUT_MS);
+    headerSlot.armed = {
+      baseUrl,
+      ms,
+      onTimeout: () => {
+        headerTimeouts += 1;
+        headerTimeoutMs = ms;
+      },
+      onHeaders: () => {
+        headerTimeouts = 0;
+      },
+    };
+  });
 
   const resetUi = (ctx: ExtensionContext) => {
     ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -101,6 +170,7 @@ export default function (pi: ExtensionAPI) {
     const s = state;
     s?.wake?.(false);
     state = null;
+    headerTimeouts = 0;
     resetUi(ctx);
     if (s) pi.events.emit(AUTO_RETRY_RESET, { attempt: s.attempt, ctx } satisfies AutoRetryEvent);
   };
@@ -122,6 +192,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_end", async (event, ctx) => {
     if (event.message.role !== "assistant") return;
+    headerSlot.armed = undefined; // a WebSocket request never consumes it
+    const timedOutAfterMs = headerTimeoutMs;
+    headerTimeoutMs = undefined;
 
     // Successful assistant turn after one or more retries → announce recovery.
     // Any stopReason other than "error" counts as success (stop, toolUse, etc.).
@@ -154,7 +227,7 @@ export default function (pi: ExtensionAPI) {
       state = { attempt: 0, lastError: "", pending: false, wake: null };
     }
     state.attempt += 1;
-    state.lastError = errorMessage;
+    state.lastError = timedOutAfterMs ? `no response headers within ${fmtSeconds(timedOutAfterMs)}` : errorMessage;
     state.pending = true;
   });
 
