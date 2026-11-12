@@ -33,6 +33,7 @@ const LOCAL_NETWORK_PATTERN =
 // prefill, so each consecutive header timeout adds 10s to the deadline, up to 30s.
 const HEADERS_TIMEOUT_MS = Number(process.env.PI_AUTO_RETRY_HEADERS_TIMEOUT_MS) || 10_000;
 const MAX_HEADERS_TIMEOUT_MS = 30_000;
+const HEADERS_TIMEOUT_ERROR = "no response headers within";
 
 const RETRY_CUSTOM_TYPE = "auto-retry-kick";
 const STATUS_KEY = "auto-retry";
@@ -61,6 +62,7 @@ export interface AutoRetryEvent {
 
 function computeDelayMs(attempt: number, errorMessage: string): number {
   if (LOCAL_NETWORK_PATTERN.test(errorMessage)) return BASE_DELAY_MS;
+  if (errorMessage.startsWith(HEADERS_TIMEOUT_ERROR)) return BASE_DELAY_MS; // the wait for headers already spaced it out
   // Flat 2s + jitter (0..3s) for the message_stop cutoff, regardless of attempt.
   if (STREAM_STOP_PATTERN.test(errorMessage)) {
     return STREAM_STOP_BASE_MS + Math.floor(Math.random() * STREAM_STOP_JITTER_MS);
@@ -100,7 +102,7 @@ function headerDeadlineSlot(): { armed?: HeaderDeadline } {
     const outer = init?.signal ?? (input instanceof Request ? input.signal : undefined);
     const id = setTimeout(() => {
       deadline.onTimeout();
-      timer.abort(new Error(`no response headers within ${fmtSeconds(deadline.ms)} (timed out)`));
+      timer.abort(new Error(`${HEADERS_TIMEOUT_ERROR} ${fmtSeconds(deadline.ms)} (timed out)`));
     }, deadline.ms);
     const signal = outer ? AbortSignal.any([outer, timer.signal]) : timer.signal;
     return inner(input, { ...init, signal }).then(
@@ -233,7 +235,7 @@ export default function (pi: ExtensionAPI) {
       state = { attempt: 0, lastError: "", pending: false, wake: null };
     }
     state.attempt += 1;
-    state.lastError = timedOutAfterMs ? `no response headers within ${fmtSeconds(timedOutAfterMs)}` : errorMessage;
+    state.lastError = timedOutAfterMs ? `${HEADERS_TIMEOUT_ERROR} ${fmtSeconds(timedOutAfterMs)}` : errorMessage;
     state.pending = true;
   });
 

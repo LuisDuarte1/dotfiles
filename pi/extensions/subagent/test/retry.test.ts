@@ -35,7 +35,7 @@ const ANTHROPIC_REPLY = sse([
 	{ type: "message_stop" },
 ]);
 
-test("a request without response headers in time is retried with a deadline of 1x, 2x, then 3x the step", async () => {
+test("a request without response headers in time is retried every 2s, with a deadline of 1x, 2x, then 3x the step", async () => {
 	const abandoned: Promise<void>[] = [];
 	const server = http.createServer((req, res) => {
 		if (abandoned.length < 3) {
@@ -64,6 +64,7 @@ test("a request without response headers in time is retried with a deadline of 1
 
 		const notices = session.events.filter((e) => e.type === "extension_ui_request" && /Retrying in/.test(e.message ?? ""));
 		assert.deepEqual(notices.map((e) => /within (\d+s)/.exec(e.message)?.[1]), ["1s", "2s", "3s"]);
+		assert.deepEqual(notices.map((e) => /Retrying in (\d+s)/.exec(e.message)?.[1]), ["2s", "2s", "2s"]);
 		assert.equal(finalAssistantText(session.events), "recovered");
 	} finally {
 		await session.close();
