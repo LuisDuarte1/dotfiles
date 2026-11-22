@@ -32,7 +32,8 @@ Links every entry of pi/extensions and pi/agents into ~/.pi/agent/
 links there.
 
 Renders copies, deep-merged with overlay fragments (objects merge,
-arrays and scalars from later files win, files apply in name order):
+arrays and scalars from later files win, a null deletes the key, files
+apply in name order):
   pi/settings.json  + ~/.config/dotfiles/pi/settings.d/*.json
                     + nix pi-extensions (~/.nix-profile/lib/pi-extensions)
                     -> ~/.pi/agent/settings.json
@@ -78,7 +79,12 @@ merge() {
     for f in "$fragments"/*.json; do
         [[ -f "$f" ]] && files+=("$f")
     done
-    jq -n 'reduce inputs as $f ({}; . * $f)' "${files[@]}"
+    # A null in a fragment DELETES the key. Deep-merge can override a value but cannot
+    # remove one, so without this an overlay had no way to switch off an entry the base
+    # ships -- e.g. an MCP server whose binary only exists on one kind of machine.
+    jq -n 'reduce inputs as $f ({}; . * $f)
+           | walk(if type == "object" then with_entries(select(.value != null)) else . end)' \
+        "${files[@]}"
 }
 
 write_file() {

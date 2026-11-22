@@ -40,8 +40,8 @@ All overlay paths are optional; with none present everything behaves as standalo
 | Hook | Consumed by | Contract |
 |------|-------------|----------|
 | `$OVERLAY/bashrc.d/*.sh` | `bash/bashrc` (last thing it does) | Sourced in name order; may wrap or override anything |
-| `$OVERLAY/pi/settings.d/*.json`, `$OVERLAY/pi/mcp.d/*.json` | `bin/dotfiles-sync` | Deep-merged over `pi/settings.json` / `pi/mcp.json` (later files win, arrays are replaced) |
-| `$OVERLAY/zed/settings.d/*.json` | `bin/dotfiles-sync` | Deep-merged over `zed/settings.json` |
+| `$OVERLAY/pi/settings.d/*.json`, `$OVERLAY/pi/mcp.d/*.json` | `bin/dotfiles-sync` | Deep-merged over `pi/settings.json` / `pi/mcp.json` (later files win, arrays are replaced, **a `null` deletes the key**) |
+| `$OVERLAY/zed/settings.d/*.json` | `bin/dotfiles-sync` | Deep-merged over `zed/settings.json` (same `null`-deletes rule) |
 | `$OVERLAY/hooks/pi-auth` | `hypr/agent-layout`, `bin/solve-mr-comments` | Executable: `check` (exit 0 = valid), `login [--force]` (interactive), `env` (prints `export` lines) |
 | `~/.pi/agent/{extensions,agents}/*` | pi | Real dirs; `dotfiles-sync` links this repo's entries and prunes dangling links, overlays link their own |
 | `~/.pi/agent/models.json` | pi | Not shipped here; an overlay may provide one |
