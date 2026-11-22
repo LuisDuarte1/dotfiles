@@ -130,9 +130,13 @@ export NVM_DIR="$HOME/.nvm"
 
 export PYENV_ROOT="$HOME/.pyenv"
 [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-eval "$(pyenv init - bash)"
-
-eval "$(pyenv virtualenv-init -)"
+# Guarded: pyenv only exists on machines where install.sh put it. Unguarded, every
+# other shell (a container, a fresh checkout, every sandbox) printed
+# "pyenv: command not found" twice before anything else ran.
+if command -v pyenv >/dev/null 2>&1; then
+    eval "$(pyenv init - bash)"
+    eval "$(pyenv virtualenv-init -)"
+fi
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$PATH:$BUN_INSTALL/bin"
