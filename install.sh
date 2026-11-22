@@ -113,6 +113,25 @@ ln -sfn "$(pwd -P)" ~/.local/share/dotfiles
 # Symlink bashrc
 ln -sf "$(pwd)/bash/bashrc" ~/.bashrc
 
+# ssh hands out a *login* shell, which reads ~/.profile — not ~/.bashrc. Some machines
+# have no ~/.profile at all (Debian's /etc/profile reads neither ~/.bashrc nor
+# ~/.local/bin; Ubuntu's default profile does both, which is why this is invisible on a
+# desktop). Written only when absent, so a real profile is never replaced.
+if [ ! -e "$HOME/.profile" ]; then
+  cat > "$HOME/.profile" <<'PROFILE'
+# Created by dotfiles/install.sh: login shells read ~/.profile, not ~/.bashrc.
+if [ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) PATH="$HOME/.local/bin:$PATH" ;;
+esac
+export PATH
+PROFILE
+  success "Wrote ~/.profile (sources ~/.bashrc, adds ~/.local/bin to PATH)"
+else
+  info "$HOME/.profile exists; left alone (add the ~/.bashrc source yourself if login shells miss it)"
+fi
+
 # Symlink tmux config
 ln -sf "$(pwd)/tmux/tmux.conf" ~/.tmux.conf
 
