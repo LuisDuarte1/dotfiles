@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cacheTtlMs, type DeadlineInput, headerDeadline, lastCacheTouch, uncachedTokens } from "./deadline.ts";
+import { cacheTtlMs, type DeadlineInput, headerDeadline, lastCacheTouch, promptSplit } from "./deadline.ts";
 
 const MODEL = "anthropic/claude-opus-5-5";
 const NOW = Date.parse("2026-11-23T11:12:44Z");
@@ -15,24 +15,30 @@ const input = (overrides: Partial<DeadlineInput>): DeadlineInput => ({
   ...overrides,
 });
 
-test("a warm cache leaves only the new tokens to prefill", () => {
-  assert.equal(uncachedTokens(input({})), 3_000);
-  assert.deepEqual(headerDeadline(input({})), { ms: 10_300, uncached: 3_000 });
+test("a warm cache prefills only the new tokens, but still budgets reading the cached prefix", () => {
+  assert.deepEqual(promptSplit(input({})), { cached: 897_000, uncached: 3_000 });
+  assert.deepEqual(headerDeadline(input({})), { ms: 40_200, cached: 897_000, uncached: 3_000 });
+});
+
+test("a 725k-token warm prompt gets well past the median 10s cache read", () => {
+  const warm = input({ contextTokens: 726_000, cache: { model: MODEL, at: NOW - 10_000, promptTokens: 725_000 } });
+  assert.equal(headerDeadline(warm).ms, 34_267);
 });
 
 test("an expired cache prefills the whole context", () => {
   const cold = input({ cache: { model: MODEL, at: NOW - 12 * 24 * 60 * MINUTE, promptTokens: 897_365 } });
-  assert.deepEqual(headerDeadline(cold), { ms: 100_000, uncached: 900_000 });
+  assert.deepEqual(headerDeadline(cold), { ms: 100_000, cached: 0, uncached: 900_000 });
 });
 
 test("no prior response, or one from another model, counts as cold", () => {
-  assert.equal(uncachedTokens(input({ cache: undefined })), 900_000);
-  assert.equal(uncachedTokens(input({ cache: { model: "openai/gpt-5.6-sol", at: NOW, promptTokens: 897_000 } })), 900_000);
+  assert.deepEqual(promptSplit(input({ cache: undefined })), { cached: 0, uncached: 900_000 });
+  const other = input({ cache: { model: "openai/gpt-5.6-sol", at: NOW, promptTokens: 897_000 } });
+  assert.deepEqual(promptSplit(other), { cached: 0, uncached: 900_000 });
 });
 
-test("a header timeout makes the retry cold and at least doubles the deadline", () => {
-  assert.deepEqual(headerDeadline(input({ timedOutMs: 10_300 })), { ms: 100_000, uncached: 900_000 });
-  assert.equal(headerDeadline(input({ timedOutMs: 100_000 })).ms, 200_000);
+test("a header timeout keeps the cache estimate and at least doubles the deadline", () => {
+  assert.deepEqual(headerDeadline(input({ timedOutMs: 40_200 })), { ms: 80_400, cached: 897_000, uncached: 3_000 });
+  assert.equal(headerDeadline(input({ timedOutMs: 10_000 })).ms, 40_200);
 });
 
 test("the deadline never exceeds pi's idle timeout", () => {
@@ -41,8 +47,8 @@ test("the deadline never exceeds pi's idle timeout", () => {
 });
 
 test("a context smaller than the cached prompt never goes negative", () => {
-  assert.equal(uncachedTokens(input({ contextTokens: 10_000 })), 0);
-  assert.equal(headerDeadline(input({ contextTokens: 10_000 })).ms, 10_000);
+  assert.deepEqual(promptSplit(input({ contextTokens: 10_000 })), { cached: 10_000, uncached: 0 });
+  assert.equal(headerDeadline(input({ contextTokens: 10_000 })).ms, 10_333);
 });
 
 test("cache lifetime follows the retention pi requests", () => {

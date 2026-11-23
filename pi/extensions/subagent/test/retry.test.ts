@@ -56,7 +56,7 @@ test("a request without response headers in time is retried every 2s, doubling t
 		},
 	};
 	fs.writeFileSync(path.join(sandbox.agentDir, "models.json"), JSON.stringify(models));
-	const session = new RpcSession({ ...sandbox, env: { ...sandbox.env, PI_AUTO_RETRY_HEADERS_TIMEOUT_MS: "1000", PI_AUTO_RETRY_PREFILL_TPS: "1e12" } }, "local/m");
+	const session = new RpcSession({ ...sandbox, env: { ...sandbox.env, PI_AUTO_RETRY_HEADERS_TIMEOUT_MS: "1000", PI_AUTO_RETRY_PREFILL_TPS: "1e12", PI_AUTO_RETRY_CACHED_TPS: "1e12" } }, "local/m");
 	try {
 		await session.send({ type: "prompt", message: "hello" });
 		await session.waitFor((e) => e.type === "agent_settled");

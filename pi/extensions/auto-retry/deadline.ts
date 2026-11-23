@@ -16,12 +16,23 @@ export interface DeadlineInput {
 export interface DeadlineConfig {
   baseMs: number;
   tokensPerSec: number;
+  cachedTokensPerSec: number;
   maxMs: number;
 }
 
-// 10k tokens/s is slower than 95% of the cold 100k+ token requests in past sessions; the
-// 5-minute cap is pi's default httpIdleTimeoutMs, which aborts a silent request anyway.
-export const DEFAULT_DEADLINE: DeadlineConfig = { baseMs: 10_000, tokensPerSec: 10_000, maxMs: 300_000 };
+// Past sessions prefilled 95% of cold prompts faster than 10k tokens/s and read 99% of cached ones
+// faster than 30k; the cap is pi's default httpIdleTimeoutMs, which aborts a silent request anyway.
+export const DEFAULT_DEADLINE: DeadlineConfig = {
+  baseMs: 10_000,
+  tokensPerSec: 10_000,
+  cachedTokensPerSec: 30_000,
+  maxMs: 300_000,
+};
+
+export interface PromptSplit {
+  cached: number;
+  uncached: number;
+}
 
 const DEFAULT_CACHE_TTL_S = 300;
 
@@ -77,23 +88,20 @@ export function lastCacheTouch(branch: readonly EntryLike[]): CacheTouch | undef
   return undefined;
 }
 
-// An aborted prefill most likely wrote no cache, so the retry after a header timeout pays for the
-// whole prompt again; a warm cache leaves only what was added since the last response.
-export function uncachedTokens(input: DeadlineInput): number {
+// Reading a warm prefix back still takes about 10s at 800k tokens, so it gets its own rate; only
+// the tokens added since the last cached response pay the slower cold-prefill one.
+export function promptSplit(input: DeadlineInput): PromptSplit {
   const { cache } = input;
-  const warm =
-    input.timedOutMs === undefined &&
-    cache !== undefined &&
-    cache.model === input.model &&
-    input.now - cache.at < input.cacheTtlMs;
-  return warm ? Math.max(0, input.contextTokens - cache.promptTokens) : input.contextTokens;
+  const warm = cache !== undefined && cache.model === input.model && input.now - cache.at < input.cacheTtlMs;
+  const cached = warm ? Math.min(input.contextTokens, cache.promptTokens) : 0;
+  return { cached, uncached: input.contextTokens - cached };
 }
 
-// Headers arrive only after prefill, so the deadline grows with the tokens left to prefill, and
-// each further timeout at least doubles it in case the rate estimate was too optimistic.
-export function headerDeadline(input: DeadlineInput, config: DeadlineConfig = DEFAULT_DEADLINE): { ms: number; uncached: number } {
-  const uncached = uncachedTokens(input);
-  let ms = config.baseMs + (uncached / config.tokensPerSec) * 1000;
+// Headers arrive only after prefill, so the deadline grows with the prompt, and each further
+// timeout at least doubles it in case the estimate was too optimistic.
+export function headerDeadline(input: DeadlineInput, config: DeadlineConfig = DEFAULT_DEADLINE): PromptSplit & { ms: number } {
+  const split = promptSplit(input);
+  let ms = config.baseMs + (split.uncached / config.tokensPerSec + split.cached / config.cachedTokensPerSec) * 1000;
   if (input.timedOutMs !== undefined) ms = Math.max(ms, input.timedOutMs * 2);
-  return { ms: Math.round(Math.min(ms, config.maxMs)), uncached };
+  return { ms: Math.round(Math.min(ms, config.maxMs)), ...split };
 }

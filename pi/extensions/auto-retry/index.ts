@@ -45,6 +45,7 @@ const DEADLINE_CONFIG: DeadlineConfig = {
   ...DEFAULT_DEADLINE,
   baseMs: Number(process.env.PI_AUTO_RETRY_HEADERS_TIMEOUT_MS) || DEFAULT_DEADLINE.baseMs,
   tokensPerSec: Number(process.env.PI_AUTO_RETRY_PREFILL_TPS) || DEFAULT_DEADLINE.tokensPerSec,
+  cachedTokensPerSec: Number(process.env.PI_AUTO_RETRY_CACHED_TPS) || DEFAULT_DEADLINE.cachedTokensPerSec,
 };
 const HEADERS_TIMEOUT_ERROR = "no response headers within";
 
@@ -176,7 +177,7 @@ export default function (pi: ExtensionAPI) {
   let state: RetryState | null = null;
   const headerSlot = headerDeadlineSlot();
   let chainTimeoutMs: number | undefined;
-  let timedOut: { ms: number; uncached: number } | undefined;
+  let timedOut: { ms: number; cached: number; uncached: number } | undefined;
   let cacheTouch: CacheTouch | undefined;
 
   // Right after a compaction pi has no response usage to count from and reports null, so the
@@ -302,7 +303,7 @@ export default function (pi: ExtensionAPI) {
     }
     state.attempt += 1;
     state.lastError = timedOutDeadline
-      ? `${HEADERS_TIMEOUT_ERROR} ${fmtSeconds(timedOutDeadline.ms)} (~${fmtTokens(timedOutDeadline.uncached)} uncached tokens)`
+      ? `${HEADERS_TIMEOUT_ERROR} ${fmtSeconds(timedOutDeadline.ms)} (~${fmtTokens(timedOutDeadline.cached)} cached + ${fmtTokens(timedOutDeadline.uncached)} uncached tokens)`
       : errorMessage;
     state.pending = true;
   });
