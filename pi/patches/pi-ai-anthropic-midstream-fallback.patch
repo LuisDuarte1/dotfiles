@@ -13,7 +13,7 @@ the fallback's text and tool calls.
 
 --- a/dist/api/anthropic-messages.js
 +++ b/dist/api/anthropic-messages.js
-@@ -358,6 +358,14 @@
+@@ -576,6 +576,14 @@
              let client;
              let isOAuth;
              let usageModel = model;
@@ -26,9 +26,9 @@ the fallback's text and tool calls.
 +                usageModel = fallbackCost ? { ...model, id: responseModel, cost: fallbackCost } : model;
 +            };
              let inputTransformations;
-             if (options?.client) {
-                 client = options.client;
-@@ -425,8 +433,9 @@
+             const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+             const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
+@@ -700,8 +708,9 @@
                  }
                  else if (event.type === "content_block_start") {
                      if (event.content_block.type === "fallback") {
@@ -40,7 +40,7 @@ the fallback's text and tool calls.
                          }
                          continue;
                      }
-@@ -592,6 +601,16 @@
+@@ -856,6 +865,16 @@
                          if (thinkingTokens != null) {
                              output.usage.reasoning = thinkingTokens;
                          }

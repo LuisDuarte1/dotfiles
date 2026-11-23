@@ -16,7 +16,7 @@ the wrap dropped; copy glues tagged rows back on, and applyLineResets() strips t
  const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
  class MarkdownTokenizer extends Tokenizer {
      url(src) {
-@@ -780,7 +780,7 @@
+@@ -782,7 +782,7 @@
       * consistently with the rest of the renderer.
       */
      wrapCellText(text, maxWidth, stylePrefix = "") {
@@ -36,7 +36,7 @@ the wrap dropped; copy glues tagged rows back on, and applyLineResets() strips t
  import { WheelScrollAccelerator } from "./wheel-scroll.js";
  const ENTER_ALT_SCREEN = "\x1b[?1049h";
  const EXIT_ALT_SCREEN = "\x1b[?1049l";
-@@ -1226,7 +1226,13 @@
+@@ -1229,7 +1229,13 @@
          for (let row = selection.start.row; row <= selection.end.row; row++) {
              const line = sourceLines[row] ?? "";
              const columns = this.getSelectionColumns(line, row, selection);
@@ -56,13 +56,13 @@ the wrap dropped; copy glues tagged rows back on, and applyLineResets() strips t
 @@ -5,7 +5,7 @@
  import { isKeyRelease, matchesKey } from "./keys.js";
  import { parseOscColorResponse, parseTerminalColorSchemeReport, } from "./terminal-colors.js";
- import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
+ import { getCapabilities, getImageLineExtent, getMaxKittyImageRows, isImageLine, setCellDimensions, stripImageSequences, } from "./terminal-image.js";
 -import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.js";
 +import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, stripSoftWrapMarkers, visibleWidth } from "./utils.js";
  /**
   * Dispatch an event to a component and retain the exact target and coordinate
   * transform. Containers use this when forwarding events to nested children.
-@@ -1047,7 +1047,7 @@
+@@ -1142,7 +1142,7 @@
              const line = lines[i];
              if (!isImageLine(line)) {
                  // Cursor markers are internal render metadata and must never reach terminal output.
@@ -73,7 +73,7 @@ the wrap dropped; copy glues tagged rows back on, and applyLineResets() strips t
          return lines;
 --- a/dist/utils.js
 +++ b/dist/utils.js
-@@ -975,7 +975,43 @@
+@@ -1057,7 +1057,43 @@
          wrapped.push(currentLine);
      }
      // Trailing whitespace can cause lines to exceed the requested width
