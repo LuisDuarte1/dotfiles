@@ -26,7 +26,7 @@ export function makeSandbox(options: { autoRetry?: boolean } = {}): Sandbox {
 	fs.symlinkSync(extensionDir, path.join(agentDir, "extensions", "subagent"));
 	fs.symlinkSync(path.join(here, "fake-provider.ts"), path.join(agentDir, "extensions", "fake-provider.ts"));
 	if (options.autoRetry) {
-		fs.symlinkSync(path.resolve(extensionDir, "..", "auto-retry.ts"), path.join(agentDir, "extensions", "auto-retry.ts"));
+		fs.symlinkSync(path.resolve(extensionDir, "..", "auto-retry"), path.join(agentDir, "extensions", "auto-retry"));
 		fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false } }));
 	}
 	fs.writeFileSync(
