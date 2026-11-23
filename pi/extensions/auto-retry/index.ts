@@ -1,6 +1,16 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { estimateTokens, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { isContextOverflow } from "@earendil-works/pi-ai";
+import {
+  type CacheTouch,
+  cacheTtlMs,
+  DEFAULT_DEADLINE,
+  type DeadlineConfig,
+  headerDeadline,
+  lastCacheTouch,
+  modelKey,
+  touchFromMessage,
+} from "./deadline.ts";
 
 // Drop-in replacement for pi's built-in auto-retry. Retries indefinitely with
 // capped exponential backoff (default 2s..2min) on all transient provider errors.
@@ -29,10 +39,13 @@ const STREAM_STOP_JITTER_MS = 3_000;
 const LOCAL_NETWORK_PATTERN =
   /\b(EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|ENETDOWN|EADDRNOTAVAIL|ETIMEDOUT|ECONNRESET|UND_ERR_CONNECT_TIMEOUT)\b/;
 
-// A dead connection otherwise hangs until pi's 5-minute idle timeout. Headers arrive only after
-// prefill, so each consecutive header timeout adds 10s to the deadline, up to 30s.
-const HEADERS_TIMEOUT_MS = Number(process.env.PI_AUTO_RETRY_HEADERS_TIMEOUT_MS) || 10_000;
-const MAX_HEADERS_TIMEOUT_MS = 30_000;
+// A dead connection otherwise hangs until pi's 5-minute idle timeout, but a cold prompt of 900k
+// tokens needs well over a minute of prefill before any header, so the deadline scales with it.
+const DEADLINE_CONFIG: DeadlineConfig = {
+  ...DEFAULT_DEADLINE,
+  baseMs: Number(process.env.PI_AUTO_RETRY_HEADERS_TIMEOUT_MS) || DEFAULT_DEADLINE.baseMs,
+  tokensPerSec: Number(process.env.PI_AUTO_RETRY_PREFILL_TPS) || DEFAULT_DEADLINE.tokensPerSec,
+};
 const HEADERS_TIMEOUT_ERROR = "no response headers within";
 
 // "Request timed out." already sat out a deadline (ours for headers, or the SDK's own), so backing
@@ -83,6 +96,10 @@ function computeDelayMs(attempt: number, errorMessage: string): number {
 
 function fmtSeconds(ms: number): string {
   return `${(ms / 1000).toFixed(0)}s`;
+}
+
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
 }
 
 interface HeaderDeadline {
@@ -158,25 +175,57 @@ const QUEUE_POLL_MS = 250;
 export default function (pi: ExtensionAPI) {
   let state: RetryState | null = null;
   const headerSlot = headerDeadlineSlot();
-  let headerTimeouts = 0;
-  let headerTimeoutMs: number | undefined;
+  let chainTimeoutMs: number | undefined;
+  let timedOut: { ms: number; uncached: number } | undefined;
+  let cacheTouch: CacheTouch | undefined;
+
+  // Right after a compaction pi has no response usage to count from and reports null, so the
+  // projected messages are estimated instead.
+  const contextTokens = (ctx: ExtensionContext): number => {
+    const tokens = ctx.getContextUsage()?.tokens;
+    if (typeof tokens === "number") return tokens;
+    return ctx.sessionManager.buildSessionProjection().messages.reduce((n, m) => n + estimateTokens(m), 0);
+  };
+
+  const reseedCache = (ctx: ExtensionContext) => {
+    cacheTouch = lastCacheTouch(ctx.sessionManager.getBranch());
+  };
 
   pi.on("before_provider_request", (_event, ctx) => {
-    const baseUrl = ctx.model?.baseUrl;
-    if (!baseUrl) return;
-    const ms = Math.min(HEADERS_TIMEOUT_MS * (headerTimeouts + 1), MAX_HEADERS_TIMEOUT_MS);
+    const model = ctx.model;
+    if (!model?.baseUrl) return;
+    const deadline = headerDeadline(
+      {
+        now: Date.now(),
+        model: modelKey(model.provider, model.id),
+        contextTokens: contextTokens(ctx),
+        cacheTtlMs: cacheTtlMs(model.promptCache, process.env.PI_CACHE_RETENTION),
+        cache: cacheTouch,
+        timedOutMs: chainTimeoutMs,
+      },
+      DEADLINE_CONFIG,
+    );
     headerSlot.armed = {
-      baseUrl,
-      ms,
+      baseUrl: model.baseUrl,
+      ms: deadline.ms,
       onTimeout: () => {
-        headerTimeouts += 1;
-        headerTimeoutMs = ms;
+        chainTimeoutMs = deadline.ms;
+        timedOut = deadline;
       },
       onHeaders: () => {
-        headerTimeouts = 0;
+        chainTimeoutMs = undefined;
       },
     };
   });
+
+  // Idle cache warming re-sends the last prompt before it expires, which keeps that prompt cached
+  // for another lifetime from now.
+  pi.on("cache_warming_decision", (event) => {
+    if (event.action === "warm" && cacheTouch) cacheTouch = { ...cacheTouch, at: Date.now() };
+  });
+
+  pi.on("session_compact", (_event, ctx) => reseedCache(ctx));
+  pi.on("session_tree", (_event, ctx) => reseedCache(ctx));
 
   const resetUi = (ctx: ExtensionContext) => {
     ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -187,7 +236,7 @@ export default function (pi: ExtensionAPI) {
     const s = state;
     s?.wake?.(false);
     state = null;
-    headerTimeouts = 0;
+    chainTimeoutMs = undefined;
     resetUi(ctx);
     if (s) pi.events.emit(AUTO_RETRY_RESET, { attempt: s.attempt, ctx } satisfies AutoRetryEvent);
   };
@@ -210,8 +259,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", async (event, ctx) => {
     if (event.message.role !== "assistant") return;
     headerSlot.armed = undefined; // a WebSocket request never consumes it
-    const timedOutAfterMs = headerTimeoutMs;
-    headerTimeoutMs = undefined;
+    const timedOutDeadline = timedOut;
+    timedOut = undefined;
 
     // pi already reports the abort, and the user chose to stop: announcing a recovery here
     // would claim the retried request succeeded.
@@ -223,6 +272,7 @@ export default function (pi: ExtensionAPI) {
     // Successful assistant turn after one or more retries → announce recovery.
     // Any stopReason other than "error" counts as success (stop, toolUse, etc.).
     if (event.message.stopReason !== "error") {
+      cacheTouch = touchFromMessage(event.message, Date.now()) ?? cacheTouch;
       if (state) {
         const n = state.attempt;
         ctx.ui.notify(
@@ -251,7 +301,9 @@ export default function (pi: ExtensionAPI) {
       state = { attempt: 0, lastError: "", pending: false, wake: null };
     }
     state.attempt += 1;
-    state.lastError = timedOutAfterMs ? `${HEADERS_TIMEOUT_ERROR} ${fmtSeconds(timedOutAfterMs)}` : errorMessage;
+    state.lastError = timedOutDeadline
+      ? `${HEADERS_TIMEOUT_ERROR} ${fmtSeconds(timedOutDeadline.ms)} (~${fmtTokens(timedOutDeadline.uncached)} uncached tokens)`
+      : errorMessage;
     state.pending = true;
   });
 
@@ -349,6 +401,7 @@ export default function (pi: ExtensionAPI) {
   let unsubscribeInput: (() => void) | null = null;
 
   pi.on("session_start", async (_event, ctx) => {
+    reseedCache(ctx);
     if (!ctx.hasUI) return;
     unsubscribeInput?.();
     unsubscribeInput = ctx.ui.onTerminalInput((data) => {

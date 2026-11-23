@@ -35,7 +35,7 @@ const ANTHROPIC_REPLY = sse([
 	{ type: "message_stop" },
 ]);
 
-test("a request without response headers in time is retried every 2s, with a deadline of 1x, 2x, then 3x the step", async () => {
+test("a request without response headers in time is retried every 2s, doubling the deadline each time", async () => {
 	const abandoned: Promise<void>[] = [];
 	const server = http.createServer((req, res) => {
 		if (abandoned.length < 3) {
@@ -56,14 +56,15 @@ test("a request without response headers in time is retried every 2s, with a dea
 		},
 	};
 	fs.writeFileSync(path.join(sandbox.agentDir, "models.json"), JSON.stringify(models));
-	const session = new RpcSession({ ...sandbox, env: { ...sandbox.env, PI_AUTO_RETRY_HEADERS_TIMEOUT_MS: "1000" } }, "local/m");
+	const session = new RpcSession({ ...sandbox, env: { ...sandbox.env, PI_AUTO_RETRY_HEADERS_TIMEOUT_MS: "1000", PI_AUTO_RETRY_PREFILL_TPS: "1e12" } }, "local/m");
 	try {
 		await session.send({ type: "prompt", message: "hello" });
 		await session.waitFor((e) => e.type === "agent_settled");
 		await Promise.all(abandoned);
 
 		const notices = session.events.filter((e) => e.type === "extension_ui_request" && /Retrying in/.test(e.message ?? ""));
-		assert.deepEqual(notices.map((e) => /within (\d+s)/.exec(e.message)?.[1]), ["1s", "2s", "3s"]);
+		assert.deepEqual(notices.map((e) => /within (\d+s)/.exec(e.message)?.[1]), ["1s", "2s", "4s"]);
+		assert.ok(notices.every((e) => /uncached tokens/.test(e.message)), "names the prefill it waited for");
 		assert.deepEqual(notices.map((e) => /Retrying in (\d+s)/.exec(e.message)?.[1]), ["2s", "2s", "2s"]);
 		assert.equal(finalAssistantText(session.events), "recovered");
 	} finally {
