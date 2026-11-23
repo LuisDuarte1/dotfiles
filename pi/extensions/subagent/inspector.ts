@@ -56,8 +56,8 @@ export class SubagentInspector implements Component, Focusable {
 
 	private entries(): RunState[] {
 		const current = this.opts.registry.all();
-		const known = new Set(current.map((run) => run.sessionFile).filter(Boolean));
-		return [...current, ...this.opts.pastRuns.filter((run) => !known.has(run.sessionFile))];
+		const known = new Set(current.map((run) => run.callId).filter(Boolean));
+		return [...current, ...this.opts.pastRuns.filter((run) => !known.has(run.callId))];
 	}
 
 	private open(run: RunState): void {
@@ -259,7 +259,7 @@ export class SubagentInspector implements Component, Focusable {
 			footer = this.input.render(inner)[0] ?? "";
 		}
 		return {
-			title: `Subagent ${run.id > 0 ? `#${run.id}` : "(earlier)"}${position}`,
+			title: `Subagent ${run.id > 0 ? `#${run.id}` : "(earlier)"}${run.name ? ` @${run.name}` : ""}${position}`,
 			body,
 			footer,
 		};

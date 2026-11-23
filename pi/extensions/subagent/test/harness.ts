@@ -38,7 +38,7 @@ export function makeSandbox(options: { autoRetry?: boolean } = {}): Sandbox {
 	return { agentDir, cwd, env, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
-const BASE_ARGS = ["--no-session", "-nc", "-ns", "-np"];
+const BASE_ARGS = ["-nc", "-ns", "-np"];
 
 export interface JsonEvent {
 	type: string;
@@ -47,7 +47,7 @@ export interface JsonEvent {
 
 export function runJson(sandbox: Sandbox, prompt: string, timeoutMs = 60_000): Promise<JsonEvent[]> {
 	return new Promise((resolve, reject) => {
-		const proc = spawn("pi", ["--mode", "json", ...BASE_ARGS, "--model", "fake/parent", prompt], {
+		const proc = spawn("pi", ["--mode", "json", "--no-session", ...BASE_ARGS, "--model", "fake/parent", prompt], {
 			cwd: sandbox.cwd,
 			env: sandbox.env,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -76,8 +76,8 @@ export class RpcSession {
 	private waiters: { match: (e: JsonEvent) => boolean; resolve: (e: JsonEvent) => void }[] = [];
 	private nextId = 0;
 
-	constructor(sandbox: Sandbox, model = "fake/parent") {
-		this.proc = spawn("pi", ["--mode", "rpc", ...BASE_ARGS, "--model", model], { cwd: sandbox.cwd, env: sandbox.env });
+	constructor(sandbox: Sandbox, model = "fake/parent", sessionArgs = ["--no-session"]) {
+		this.proc = spawn("pi", ["--mode", "rpc", ...sessionArgs, ...BASE_ARGS, "--model", model], { cwd: sandbox.cwd, env: sandbox.env });
 		let buffer = "";
 		this.proc.stdout?.on("data", (chunk) => {
 			buffer += chunk;
@@ -112,6 +112,16 @@ export class RpcSession {
 			const timer = setTimeout(() => reject(new Error(`timed out waiting for event (${this.events.length} seen)`)), timeoutMs);
 			this.waiters.push({ match, resolve: (e) => (clearTimeout(timer), resolve(e)) });
 		});
+	}
+
+	// Waits for the parent's whole turn, so the next prompt starts a new turn instead of steering
+	// this one; resolves to the subagent end event of the turn, if there was one.
+	async prompt(message: string): Promise<JsonEvent> {
+		const settled = this.events.filter((e) => e.type === "agent_settled").length;
+		const ends = this.events.filter(isSubagentEnd).length;
+		await this.send({ type: "prompt", message });
+		await this.waitFor(() => this.events.filter((e) => e.type === "agent_settled").length > settled);
+		return this.events.filter(isSubagentEnd)[ends];
 	}
 
 	close(): Promise<void> {

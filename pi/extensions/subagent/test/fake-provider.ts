@@ -117,15 +117,17 @@ export default function (pi: ExtensionAPI) {
 				if (answered.length > 0) return reply(m, [{ type: "text", text: `parent saw: ${answered.at(-1)}` }]);
 				const agent = /AGENT=(\S+)/.exec(prompt)?.[1] ?? "tester";
 				const override = /MODEL=(\S+)/.exec(prompt)?.[1];
+				const name = /NAME=(\S+)/.exec(prompt)?.[1];
 				const context = prompt.includes("BIG") ? "x".repeat(200_000) : undefined;
-				const subtask = prompt.replace(/^delegate\s*/, "");
+				const subtask = prompt.replace(/^delegate\s*/, "").replace(/\s*NAME=\S+\s*/, " ").trim();
+				const base = { ...(agent === "-" ? {} : { agent }), ...(name ? { name } : {}) };
 				if (prompt.includes("PARALLEL")) {
 					return reply(m, [
-						call("subagent", { agent, task: `SLEEP3 left ${subtask}` }),
-						call("subagent", { agent, task: `SLEEP3 right ${subtask}` }),
+						call("subagent", { ...base, task: `SLEEP3 left ${subtask}` }),
+						call("subagent", { ...base, task: `SLEEP3 right ${subtask}` }),
 					]);
 				}
-				return reply(m, [call("subagent", { agent, task: subtask, ...(context ? { context } : {}), ...(override ? { model: override } : {}) })]);
+				return reply(m, [call("subagent", { ...base, task: subtask, ...(context ? { context } : {}), ...(override ? { model: override } : {}) })]);
 			}
 
 			const flaky = /FLAKY(\d+)/.exec(task)?.[1];

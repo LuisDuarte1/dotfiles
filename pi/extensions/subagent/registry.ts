@@ -1,4 +1,4 @@
-import { createRun, type RunState } from "./run.ts";
+import { createRun, type RunInit, type RunState } from "./run.ts";
 
 export interface RunControls {
 	steer(text: string): Promise<string | undefined>;
@@ -19,7 +19,7 @@ export class RunRegistry {
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	private dirty = false;
 
-	create(init: { task: string; agent?: string; model?: string; context?: string }): RunState {
+	create(init: Omit<RunInit, "id">): RunState {
 		const run = createRun({ id: this.nextId++, ...init });
 		this.runs.push(run);
 		this.changed();
@@ -56,6 +56,10 @@ export class RunRegistry {
 
 	live(): RunState[] {
 		return this.runs.filter((r) => r.status === "running");
+	}
+
+	liveNamed(name: string): RunState | undefined {
+		return this.runs.find((r) => r.status === "running" && r.name === name);
 	}
 
 	all(): RunState[] {

@@ -99,7 +99,8 @@ export function transcriptLines(items: TranscriptItem[], width: number, theme: T
 export function runHeader(run: RunState, theme: Theme): string {
 	const name = run.agent ? theme.fg("accent", run.agent) : theme.fg("toolTitle", "subagent");
 	const label = run.id > 0 ? `#${run.id}` : "earlier";
-	return `${statusIcon(run.status, theme)} ${theme.fg("muted", label)} ${name} ${theme.fg("muted", `[${run.status}] · ${runStats(run)}`)}`;
+	const thread = run.name ? ` ${theme.fg("accent", `@${run.name}`)}` : "";
+	return `${statusIcon(run.status, theme)} ${theme.fg("muted", label)}${thread} ${name} ${theme.fg("muted", `[${run.status}] · ${runStats(run)}`)}`;
 }
 
 export class Lines implements Component {

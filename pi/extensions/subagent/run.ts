@@ -31,6 +31,9 @@ export type TranscriptItem = TextItem | ToolItem | UserItem | NoteItem;
 
 export interface RunState {
 	id: number;
+	name?: string;
+	callId?: string;
+	replayAfter?: string;
 	agent?: string;
 	model?: string;
 	task: string;
@@ -80,7 +83,17 @@ export function addUsage(total: Usage, usage: Usage | undefined): void {
 	total.cost.total += usage.cost.total;
 }
 
-export function createRun(init: { id: number; task: string; agent?: string; model?: string; context?: string }): RunState {
+export interface RunInit {
+	id: number;
+	task: string;
+	name?: string;
+	callId?: string;
+	agent?: string;
+	model?: string;
+	context?: string;
+}
+
+export function createRun(init: RunInit): RunState {
 	return {
 		...init,
 		startedAt: Date.now(),
@@ -300,17 +313,33 @@ export function addNote(run: RunState, level: NoteItem["level"], text: string): 
 	push(run, { kind: "note", level, text, rev: 0 });
 }
 
-// Rebuilds a finished run from its session file, so runs from before a restart
-// can still be inspected with the same transcript view as live ones.
-export function replaySession(run: RunState, jsonl: string): RunState {
+interface SessionEntry {
+	type?: string;
+	id?: string;
+	message?: Message;
+}
+
+function parseEntries(jsonl: string): SessionEntry[] {
+	const entries: SessionEntry[] = [];
 	for (const line of jsonl.split("\n")) {
 		if (!line.trim()) continue;
-		let entry: { type?: string; message?: Message; summary?: string };
 		try {
-			entry = JSON.parse(line);
-		} catch {
-			continue;
-		}
+			entries.push(JSON.parse(line));
+		} catch {}
+	}
+	return entries;
+}
+
+export function lastEntryId(jsonl: string): string | undefined {
+	return parseEntries(jsonl).findLast((entry) => entry.type !== "session" && entry.id)?.id;
+}
+
+// Rebuilds a finished run from its session file, so runs from before a restart can be inspected
+// like live ones. `after` skips earlier calls of a named thread that share this file.
+export function replaySession(run: RunState, jsonl: string, after?: string): RunState {
+	const entries = parseEntries(jsonl);
+	const start = after === undefined ? 0 : entries.findIndex((entry) => entry.id === after) + 1;
+	for (const entry of entries.slice(start)) {
 		if (entry.type === "compaction") {
 			addNote(run, "info", "context compacted");
 			continue;

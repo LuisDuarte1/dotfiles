@@ -10,7 +10,7 @@ export async function forwardDialog(
 	request: RpcExtensionUIRequest,
 	signal: AbortSignal | undefined,
 ): Promise<UiResponseBody> {
-	const label = `[subagent #${run.id}${run.agent ? ` ${run.agent}` : ""}]`;
+	const label = `[subagent #${run.id}${run.name ? ` @${run.name}` : ""}${run.agent ? ` ${run.agent}` : ""}]`;
 	const title = "title" in request ? `${label} ${request.title}` : label;
 	const opts = { signal, timeout: "timeout" in request ? request.timeout : undefined };
 	switch (request.method) {
