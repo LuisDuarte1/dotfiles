@@ -213,6 +213,13 @@ export default function (pi: ExtensionAPI) {
     const timedOutAfterMs = headerTimeoutMs;
     headerTimeoutMs = undefined;
 
+    // pi already reports the abort, and the user chose to stop: announcing a recovery here
+    // would claim the retried request succeeded.
+    if (event.message.stopReason === "aborted") {
+      if (state) fullReset(ctx);
+      return;
+    }
+
     // Successful assistant turn after one or more retries → announce recovery.
     // Any stopReason other than "error" counts as success (stop, toolUse, etc.).
     if (event.message.stopReason !== "error") {
