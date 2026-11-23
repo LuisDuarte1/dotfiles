@@ -127,7 +127,7 @@ add-on files; only their own findings file may be written.
 ## Step 2 — Launch ALL reviewers in one parallel batch
 
 Let `N` be the number of partitions. In **ONE assistant turn**, issue
-**`7 × N + G` parallel `subagent` calls**, where `G` is the number of
+**`9 × N + G` parallel `subagent` calls**, where `G` is the number of
 calls the enabled add-ons ask for (`0` without add-ons). Include every
 partition and every add-on pass in that same batch. Do not wait for one
 partition, topic, or model to finish before launching another; do not
@@ -135,13 +135,14 @@ defer add-ons to a later turn. Only aggregation waits for the batch to finish.
 
 ### Partition reviewers
 
-For EVERY partition, include these seven calls in the batch, each
+For EVERY partition, include these nine calls in the batch, each
 scoped to that partition's files:
 
 1. **Correctness** (`correctness`) — bugs, edge cases, concurrency, error handling, invariants. Two `review` calls: `sol` and `opus`.
 2. **Security** (`security`) — injection, authn/authz, secrets, deserialization, SSRF/XSS/CSRF, crypto, input validation. One `security-review` call, no model override; pass id `native`.
 3. **Performance** (`performance`) — hot paths, allocations, N+1, complexity regressions, I/O amplification, lock contention. Two `review` calls: `sol` and `opus`.
 4. **Breaking changes** (`breaking-changes`) — removed/renamed exports, signature/behavior/wire changes, semver, migration. Two `review` calls: `sol` and `opus`.
+5. **Simplification** (`simplification`) — behavior-preserving ways to make the change smaller or clearer: dead or unreachable code, duplication, helpers the repo already has reimplemented, needless abstraction/indirection/configurability, over-defensive checks, convoluted control flow. Every finding names the simpler form in `suggestion`; anything that changes behavior belongs to another topic. Severity is maintenance cost: usually LOW/MEDIUM, HIGH only for large avoidable complexity (e.g. a parallel reimplementation of an existing module), never CRITICAL. Two `review` calls: `sol` and `opus`.
 
 Keep each call compact:
 
@@ -197,7 +198,7 @@ so the two models never overwrite each other's findings. For example:
 
 Wait for all dispatched calls to finish. Verify every expected findings
 file exists and contains a YAML list (including `[]` for a clean pass):
-seven per partition, plus one per enabled add-on pass. A failed
+nine per partition, plus one per enabled add-on pass. A failed
 call, missing file, or invalid YAML is an incomplete pass, not a clean
 review. Report incomplete passes explicitly; do not silently replace a
 model or give an approval verdict while coverage is incomplete.
@@ -221,7 +222,8 @@ Read all `$RDIR/findings/*.yaml` and merge into one report:
   coverage (`sol` + `opus` for each non-security phase, one native
   Security pass per partition), and verdict (`block` / `request changes`
   / `approve with nits` / `LGTM`; use `incomplete` if coverage is missing
-  and no blocking finding already determines the verdict). Apply every
+  and no blocking finding already determines the verdict). Simplification
+  findings alone never make the verdict `block`. Apply every
   enabled add-on's aggregation rules, and note each skipped add-on. If
   the partition fallback was used, note it.
 
