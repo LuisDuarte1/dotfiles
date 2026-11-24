@@ -40,6 +40,7 @@ When asked for a Mermaid diagram, read `~/.pi/agent/MERMAID.md`.
 
 NEVER `sleep N` and then act on the result — a guessed duration is either a stall or a race. Wait
 on the event instead: block until the condition/log line/exit appears, or poll it in short intervals.
+For a wait over 2 minutes, `bg.notify` the job (`ci-wait` for CI) and end the turn.
 
 ## Working rules
 
