@@ -41,6 +41,18 @@ When asked for a Mermaid diagram, read `~/.pi/agent/MERMAID.md`.
 NEVER `sleep N` and then act on the result — a guessed duration is either a stall or a race. Wait
 on the event instead: block until the condition/log line/exit appears, or poll it in short intervals.
 
+## Working rules
+
+- A question gets an answer, not an action. Do only what was asked; report blockers.
+- Where and how I say to run something is a constraint; facts I state about my systems are true.
+- Smallest design first; nothing unrequested.
+- Say "fixed", "ready", "all" or "safe" only with proof run after the last change.
+- Gloss labels you coin, every time. End MR replies with the URL.
+- A rule of mine that should outlast the task goes in the repo's AGENTS.md.
+- Files that must outlive a command go in `~/.cache/<topic>/`, never `/tmp`.
+- On an auth wall, stop and give me the login command; never poll.
+- Never batch a tool call with the one that produces its input; batches run concurrently.
+
 ## Pi-specific notes
 
 NEVER use subagents to review your own implementation unless explicitly asked.
