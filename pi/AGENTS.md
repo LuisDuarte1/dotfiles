@@ -58,10 +58,10 @@ For a wait over 2 minutes, `bg.notify` the job (`ci-wait` for CI) and end the tu
 
 NEVER use subagents to review your own implementation unless explicitly asked.
 
-Pi has no built-in plan mode, sub-agents, or todo list. Workarounds when these are needed:
+Pi has no built-in plan mode or todo list. Workarounds when these are needed:
 
 - **Plans**: write to a `PLAN.md` file in the repo and iterate on it. Read it back at the start of each major step.
 - **Todos**: maintain a `TODO.md` if the work is large. Models often confuse themselves with synthesized todo state, so prefer a real file.
-- **Sub-agents**: split work into separate pi sessions (`pi --session <id>` to resume) or shell out for parallel work via `bash`.
+- **Sub-agents**: use the `subagent` tool; never spawn `pi -p` yourself.
 
 Use the `read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` built-in tools as the primary toolset. Skills under `~/.agents/skills/` are auto-discovered.
