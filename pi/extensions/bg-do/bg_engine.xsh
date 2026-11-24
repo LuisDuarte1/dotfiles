@@ -267,9 +267,24 @@ def _run_code(code):
 _WLOCK = threading.Lock()
 _CLIENT = [None]
 _QUEUE = []
+_SENT_RUNNING = [None]
 
 def _frame(obj):
     return base64.b64encode(json.dumps(obj).encode()) + b'\n'
+
+def _running():
+    return sum(1 for j in list(bg._jobs.values()) if not j.done)
+
+# Only the latest count matters, so a change seen with no client is not queued:
+# every attach sends the current count instead.
+def _send_running():
+    with _WLOCK:
+        c = _CLIENT[0]; n = _running()
+        if c is None or n == _SENT_RUNNING[0]: return
+        try:
+            c.sendall(_frame({'event': 'jobs', 'running': n})); _SENT_RUNNING[0] = n
+        except Exception:
+            _CLIENT[0] = None
 
 def _emit(evt):
     with _WLOCK:
@@ -287,6 +302,8 @@ def _attach(conn):
             conn.sendall(_frame({'ready': True, 'pid': os.getpid()}))
             while _QUEUE:
                 conn.sendall(_frame(_QUEUE[0])); _QUEUE.pop(0)
+            n = _running()
+            conn.sendall(_frame({'event': 'jobs', 'running': n})); _SENT_RUNNING[0] = n
         except Exception:
             return False
         _CLIENT[0] = conn
@@ -317,6 +334,8 @@ def _notifier():
                 with _WATCH_LOCK: bg._watches.remove(w)
             except Exception:
                 pass
+        try: _send_running()
+        except Exception: pass
 
 # Persistent server: survives client (extension) disconnects so jobs live across
 # a pi /reload. Self-exits (killing jobs) if no client reconnects within IDLE.

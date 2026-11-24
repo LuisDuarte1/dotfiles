@@ -11,6 +11,7 @@ export type Routed =
 	| { kind: "ready"; pid?: number }
 	| { kind: "reply"; out: string; err: string | null }
 	| { kind: "notify"; event: NotifyEvent }
+	| { kind: "jobs"; running: number }
 	| { kind: "ignore" };
 
 export function decodeFrame(line: string): unknown {
@@ -28,6 +29,10 @@ export function routeFrame(frame: unknown): Routed {
 	const f = frame as Record<string, unknown>;
 	if (f.ready === true) return { kind: "ready", pid: typeof f.pid === "number" ? f.pid : undefined };
 	if ("event" in f) {
+		if (f.event === "jobs") {
+			const n = f.running;
+			return Number.isInteger(n) && (n as number) >= 0 ? { kind: "jobs", running: n as number } : { kind: "ignore" };
+		}
 		if (f.event !== "notify") return { kind: "ignore" };
 		return {
 			kind: "notify",
@@ -46,6 +51,17 @@ export function routeFrame(frame: unknown): Routed {
 
 function str(v: unknown): string | null {
 	return typeof v === "string" ? v : null;
+}
+
+// The engine re-sends its count on every attach, so the same number can arrive
+// twice; listeners are promised one call per change.
+export function runningCounter(emit: (n: number) => void): (n: number) => void {
+	let last: number | undefined;
+	return (n) => {
+		if (n === last) return;
+		last = n;
+		emit(n);
+	};
 }
 
 export const NOTIFY_LIMITS = { cmd: 200, line: 300, tailLines: 10, tailLine: 240 };

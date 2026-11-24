@@ -135,15 +135,59 @@ test("an event fired while no client is attached is queued and flushed right aft
 		}
 	}));
 
+const isJobs = (f: Record<string, unknown>) => f.event === "jobs";
+const counts = (c: Client) => c.events("jobs").map((f) => f.running);
+
+test("the running-job count is sent on attach and on every change, once each", { skip }, () =>
+	withEngine(async (engine, c) => {
+		assert.deepEqual(c.frames.slice(0, 2), [{ ready: true, pid: engine.proc.pid }, { event: "jobs", running: 0 }]);
+		const [goA, goB] = [gate(engine, "a"), gate(engine, "b")];
+		await c.next(isJobs, "count on attach");
+		await c.run(`a = bg.run("${waitGate(goA)}")`);
+		assert.equal((await c.next(isJobs, "count 1")).running, 1);
+		await c.run(`b = bg.run("${waitGate(goB)}")`);
+		assert.equal((await c.next(isJobs, "count 2")).running, 2);
+		writeFileSync(goA, "");
+		assert.equal((await c.next(isJobs, "count back to 1")).running, 1);
+		await c.run("bg.kill(b)");
+		assert.equal((await c.next(isJobs, "count back to 0")).running, 0);
+		const r = await c.run("print(len([j for j in bg.list() if j['running']]))");
+		assert.equal(r.out.split("\n")[0], "0");
+		assert.deepEqual(counts(c), [0, 1, 2, 1, 0]);
+	}));
+
+test("a reattached client gets the current count, not the changes it missed", { skip }, () =>
+	withEngine(async (engine, first) => {
+		const [goA, goB] = [gate(engine, "a"), gate(engine, "b")];
+		await first.run(`keep = bg.run("${waitGate(goA)}")`);
+		await first.next((f) => f.running === 1, "count 1");
+		// The snippet holds the engine until the second job has ended, so that change
+		// happens with no client attached, as during a /reload.
+		first.socket.write(encode({ code: `j = bg.run("${waitGate(goB)}")\nwhile not bg.get(j).done: bg.wait(j, timeout=0.05)` }));
+		await first.close();
+		writeFileSync(goB, "");
+		const second = await engine.connect();
+		try {
+			assert.deepEqual(second.frames[1], { event: "jobs", running: 1 });
+			await second.run("print(1)");
+			assert.deepEqual(counts(second), [1], "no queued counts");
+			writeFileSync(goA, "");
+			await second.next((f) => f.running === 0, "count 0 after reattach");
+			assert.deepEqual(counts(second), [1, 0]);
+		} finally {
+			await second.close();
+		}
+	}));
+
 test("events written while a large reply is mid-send do not tear either frame", { skip }, () =>
 	withEngine(async (engine, c) => {
 		const go = gate(engine);
 		const jobs = 40;
 		let opened = false;
 		// Reading slowly keeps the reply's sendall blocked for over a second; the jobs
-		// are released by its first bytes, so their events fire while it is in flight.
+		// are released once part of it has arrived, so their events fire mid-send.
 		c.socket.on("data", () => {
-			if (!opened) {
+			if (!opened && c.partial > 100000) {
 				opened = true;
 				writeFileSync(go, "");
 			}

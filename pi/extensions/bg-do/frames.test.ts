@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodeFrame, NOTIFY_LIMITS, type NotifyEvent, notifyMessage, routeFrame } from "./frames.ts";
+import { decodeFrame, NOTIFY_LIMITS, type NotifyEvent, notifyMessage, routeFrame, runningCounter } from "./frames.ts";
 
 const b64 = (obj: unknown) => Buffer.from(JSON.stringify(obj), "utf8").toString("base64");
 
@@ -28,8 +28,23 @@ test("ready, reply and notify frames are told apart", () => {
 	assert.deepEqual(routeFrame(ev), { kind: "notify", event: fields });
 });
 
+test("a running-job count is routed as a number, and a bad one is dropped", () => {
+	assert.deepEqual(routeFrame({ event: "jobs", running: 2 }), { kind: "jobs", running: 2 });
+	assert.deepEqual(routeFrame({ event: "jobs", running: 0 }), { kind: "jobs", running: 0 });
+	for (const running of [-1, 1.5, "2", null, undefined]) {
+		assert.deepEqual(routeFrame({ event: "jobs", running }), { kind: "ignore" }, String(running));
+	}
+});
+
+test("the running count reaches listeners once per change", () => {
+	const seen: number[] = [];
+	const set = runningCounter((n) => seen.push(n));
+	for (const n of [0, 0, 1, 2, 2, 1, 0, 0, 3]) set(n);
+	assert.deepEqual(seen, [0, 1, 2, 1, 0, 3]);
+});
+
 test("an event never settles a pending reply, even one this version does not know", () => {
-	assert.deepEqual(routeFrame({ event: "jobs", running: 2 }), { kind: "ignore" });
+	assert.deepEqual(routeFrame({ event: "jobs", running: -1, out: "x" }), { kind: "ignore" });
 	assert.deepEqual(routeFrame({ event: "something-new", out: "x" }), { kind: "ignore" });
 	assert.deepEqual(routeFrame(null), { kind: "ignore" });
 	assert.deepEqual(routeFrame("text"), { kind: "ignore" });

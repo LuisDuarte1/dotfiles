@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { decodeFrame, type NotifyEvent, notifyMessage, routeFrame } from "./frames.ts";
+import { decodeFrame, type NotifyEvent, notifyMessage, routeFrame, runningCounter } from "./frames.ts";
 import { apiBlock, errorText, type InterruptCause } from "./messages.ts";
 
 // Resolve sibling files relative to this module (works through the symlinked
@@ -30,6 +30,9 @@ const API_BLOCK = apiBlock(readFileSync(USAGE_PATH, "utf8"));
 const DEFAULT_TIMEOUT_S = 120;
 const MAX_TIMEOUT_S = 600;
 const READY_TIMEOUT_MS = 20000;
+// Other extensions (a sleep inhibitor) listen for this name with a bare number;
+// renaming it or wrapping the payload breaks them silently.
+const RUNNING_EVENT = "bg-do:running";
 
 interface Frame {
 	out?: string;
@@ -71,6 +74,7 @@ export default function bgDo(pi: ExtensionAPI) {
 	let chain: Promise<Reply> = Promise.resolve({ out: "", err: null });
 
 	const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+	const setRunning = runningCounter((n) => pi.events.emit(RUNNING_EVENT, n));
 
 	function sessionKey(ctx: ExtensionContext): string {
 		let id = "default";
@@ -127,6 +131,7 @@ export default function bgDo(pi: ExtensionAPI) {
 		const p = pending;
 		pending = null;
 		if (p) p({ err: `bg_do connection dropped${orphanJobs()}` });
+		setRunning(0);
 	}
 
 	function deliverNotify(event: NotifyEvent) {
@@ -143,6 +148,7 @@ export default function bgDo(pi: ExtensionAPI) {
 	function attach(socket: Socket, onReady: (pid?: number) => void) {
 		conn = socket;
 		rxBuf = "";
+		let live = false;
 		socket.setEncoding("utf8");
 		socket.on("data", (d: string) => {
 			rxBuf += d;
@@ -153,9 +159,12 @@ export default function bgDo(pi: ExtensionAPI) {
 				if (line.trim()) {
 					const routed = routeFrame(decodeFrame(line));
 					if (routed.kind === "ready") {
+						live = true;
 						onReady(routed.pid);
 					} else if (routed.kind === "notify") {
 						deliverNotify(routed.event);
+					} else if (routed.kind === "jobs") {
+						setRunning(routed.running);
 					} else if (routed.kind === "reply") {
 						const p = pending;
 						pending = null;
@@ -165,10 +174,13 @@ export default function bgDo(pi: ExtensionAPI) {
 				idx = rxBuf.indexOf("\n");
 			}
 		});
+		// An engine that vanished cannot report its jobs ending, and a held count would
+		// keep listeners (sleep inhibitors) active forever; a deliberate detach skips this.
 		socket.on("close", () => {
 			if (conn === socket) {
 				conn = null;
 				ready = null;
+				if (live) setRunning(0);
 			}
 			const p = pending;
 			pending = null;
@@ -337,6 +349,7 @@ export default function bgDo(pi: ExtensionAPI) {
 		enginePid = undefined;
 		rxBuf = "";
 		pending = null;
+		setRunning(0);
 		try {
 			if (sockPath) unlinkSync(`${sockPath}.jobs`);
 		} catch {}

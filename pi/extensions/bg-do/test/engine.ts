@@ -78,6 +78,10 @@ export class Client {
 		return { out: f.out as string, err: f.err as string | null };
 	}
 
+	get partial(): number {
+		return this.buf.length;
+	}
+
 	events(kind: string): Frame[] {
 		return this.frames.filter((f) => f.event === kind);
 	}

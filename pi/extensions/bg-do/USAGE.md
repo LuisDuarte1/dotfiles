@@ -195,3 +195,7 @@ bgout @(jid) | grep -c PASS   # passing tests
 
 ## From the TUI
 `/bg` lists background jobs and their status.
+
+## For other extensions
+Whenever the number of running jobs changes, and on every reattach, the extension emits
+`pi.events.emit("bg-do:running", n)` with that number. It emits 0 when the engine goes away.
