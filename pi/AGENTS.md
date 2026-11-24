@@ -6,15 +6,15 @@ When committing changes with git, the following OVERRIDES apply to the standard 
   - The branch is up to date with the remote (not ahead)
   - The commit was not created by you in this conversation
 - This applies ONLY when the HEAD commit author is "Luís Duarte" and its email equals `git config user.email`
-- Autosquash rebases (`git commit --fixup=<sha>` + `git rebase -i --autosquash`) are allowed on **unpushed** commits authored by Luís Duarte, so a fix can land in the commit that introduced it
-- Still NEVER amend commits by other authors
-- Still NEVER rewrite pushed commits, and NEVER force push to main/master without explicit permission
+- On my own MR and stack branches, rewriting is the default: fold fixes with `--fixup` + autosquash and push with `--force-with-lease`
+- Once an MR has an approval, do not push to it without asking: a push resets approvals
+- Still NEVER amend other authors' commits, and NEVER rewrite or force push main/master or a branch with other authors' commits
 
 ## Commit Conventions
 
 Commits MUST be atomic, and commit messages MUST concisely explain why the change was made, not primarily what changed.
 
-When you fix your own unpushed work (review feedback, lint, a forgotten file), amend or `--fixup` it into the commit that introduced it; never stack "address feedback" commits.
+When you fix your own work (review feedback, lint, a forgotten file), amend or `--fixup` it into the commit that introduced it; never stack "address feedback" commits.
 
 ## Comment Block Length
 
