@@ -1,6 +1,7 @@
 import { estimateTokens, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { isContextOverflow } from "@earendil-works/pi-ai";
+import { authRetriesAfter, isAuthError } from "./auth.ts";
 import {
   type CacheTouch,
   cacheTtlMs,
@@ -80,6 +81,7 @@ export interface AutoRetryEvent {
 
 function computeDelayMs(attempt: number, errorMessage: string): number {
   if (
+    isAuthError(errorMessage) ||
     LOCAL_NETWORK_PATTERN.test(errorMessage) ||
     REQUEST_TIMEOUT_PATTERN.test(errorMessage) ||
     errorMessage.startsWith(HEADERS_TIMEOUT_ERROR)
@@ -147,8 +149,8 @@ function headerDeadlineSlot(): { armed?: HeaderDeadline } {
   return slot;
 }
 
-// Decide whether this failed assistant message should be auto-retried.
-// Mirrors pi's gating: error + matches transient regex + NOT a context overflow.
+// Mirrors pi's gating (error + transient regex + NOT a context overflow) plus auth errors; their
+// cap lives in message_end, so the context filter also hides the auth error that ended a chain.
 function isRetryable(message: {
   stopReason?: string;
   errorMessage?: string;
@@ -158,11 +160,16 @@ function isRetryable(message: {
   if (!message.errorMessage) return false;
   // Context overflow needs compaction, not retry — never loop on it.
   if (isContextOverflow(message as any, contextWindow)) return false;
-  return TRANSIENT_PATTERN.test(message.errorMessage) || LOCAL_NETWORK_PATTERN.test(message.errorMessage);
+  return (
+    isAuthError(message.errorMessage) ||
+    TRANSIENT_PATTERN.test(message.errorMessage) ||
+    LOCAL_NETWORK_PATTERN.test(message.errorMessage)
+  );
 }
 
 interface RetryState {
   attempt: number;
+  authRetries: number;
   lastError: string;
   pending: boolean;
   wake: ((proceed: boolean) => void) | null;
@@ -287,7 +294,8 @@ export default function (pi: ExtensionAPI) {
 
     const errorMessage = event.message.errorMessage ?? "";
     const contextWindow = ctx.model?.contextWindow;
-    if (!isRetryable(event.message as any, contextWindow)) {
+    const authRetries = authRetriesAfter(errorMessage, state?.authRetries ?? 0);
+    if (!isRetryable(event.message as any, contextWindow) || authRetries === undefined) {
       if (state) {
         ctx.ui.notify(
           `Stopping auto-retry: error is not transient (${errorMessage || "unknown"}).`,
@@ -299,9 +307,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (!state) {
-      state = { attempt: 0, lastError: "", pending: false, wake: null };
+      state = { attempt: 0, authRetries: 0, lastError: "", pending: false, wake: null };
     }
     state.attempt += 1;
+    state.authRetries = authRetries;
     state.lastError = timedOutDeadline
       ? `${HEADERS_TIMEOUT_ERROR} ${fmtSeconds(timedOutDeadline.ms)} (~${fmtTokens(timedOutDeadline.cached)} cached + ${fmtTokens(timedOutDeadline.uncached)} uncached tokens)`
       : errorMessage;
