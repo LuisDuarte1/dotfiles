@@ -188,6 +188,7 @@ ln -sf "$(pwd)/bin/update-pr-description" ~/.local/bin/update-pr-description
 ln -sf "$(pwd)/bin/pi-update" ~/.local/bin/pi-update
 ln -sf "$(pwd)/bin/validate-review-plan" ~/.local/bin/validate-review-plan
 ln -sf "$(pwd)/bin/reset-camera" ~/.local/bin/reset-camera
+ln -sf "$(pwd)/bin/ci-wait" ~/.local/bin/ci-wait
 
 # Symlink systemd user services
 mkdir -p ~/.config/systemd/user

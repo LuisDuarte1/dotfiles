@@ -1,0 +1,396 @@
+#!/bin/bash
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info()    { echo -e "${BLUE}$*${NC}"; }
+success() { echo -e "${GREEN}$*${NC}"; }
+warn()    { echo -e "${YELLOW}$*${NC}"; }
+error()   { echo -e "${RED}Error: $*${NC}" >&2; }
+
+check_dependency() {
+    if ! command -v "$1" &>/dev/null; then
+        error "'$1' is not installed. Please install it first."
+        exit 1
+    fi
+}
+
+show_help() {
+    cat <<'EOF'
+Usage: ci-wait [OPTIONS] [<mr-or-pr-url> | <branch>]
+
+Wait for the CI of a GitLab merge request or a GitHub pull request, then exit
+with a code that says how it ended. Prints one line each time the state
+changes and nothing while it stays the same, so it can run as a background
+job. With no argument it watches the open MR or PR of the current branch.
+
+A URL picks glab (.../-/merge_requests/N) or gh (.../pull/N) by its shape and
+talks to the host in it. A branch, or none, uses the host and project of the
+origin remote: hosts whose name contains "github" use gh, all others glab.
+With a branch, the MR or PR must first show the commit origin/<branch> points
+at, so it is safe to run right after git push.
+
+The merge state is judged only once CI has passed: GitLab's
+detailed_merge_status, GitHub's mergeStateStatus.
+
+Options:
+  --timeout SECS   Give up after SECS seconds (default: 3600)
+  --interval SECS  Poll every SECS seconds (default: 30)
+  --help, -h       Show this help
+
+Exit codes:
+  0  CI passed and the MR or PR can merge, or is merged
+  1  CI failed; prints the failed jobs and their URLs
+  2  blocked: CI passed but the merge is not possible (conflicts, unresolved
+     threads, missing approval, draft, closed, ...), or a manual job waits
+  3  three probes in a row failed or returned something unparsable, or the
+     branch has no open MR or PR
+  4  timed out
+  Bad usage and missing tools also exit 1, before anything is probed.
+
+Environment:
+  CI_WAIT_GH    Command to run instead of gh
+  CI_WAIT_GLAB  Command to run instead of glab
+
+Examples:
+  ci-wait
+  ci-wait --timeout 1800 https://gitlab.com/group/project/-/merge_requests/42
+  ci-wait --interval 10 https://github.com/owner/repo/pull/7
+  ci-wait my-feature-branch
+EOF
+}
+
+TIMEOUT=3600
+INTERVAL=30
+PROBE_CAP=60
+TARGET=""
+GH="${CI_WAIT_GH:-gh}"
+GLAB="${CI_WAIT_GLAB:-glab}"
+
+need_value() {
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        error "$1 needs a value"
+        show_help
+        exit 1
+    fi
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)  show_help; exit 0 ;;
+        --timeout)  need_value "$@"; TIMEOUT="$2"; shift 2 ;;
+        --interval) need_value "$@"; INTERVAL="$2"; shift 2 ;;
+        -*)         error "Unknown option: $1"; show_help; exit 1 ;;
+        *)
+            if [[ -n "$TARGET" ]]; then
+                error "Pass one MR, PR or branch, not '$TARGET' and '$1'"
+                show_help
+                exit 1
+            fi
+            TARGET="$1"
+            shift
+            ;;
+    esac
+done
+
+for value in "$TIMEOUT" "$INTERVAL"; do
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+        error "--timeout and --interval take a whole number of seconds, got '$value'"
+        exit 1
+    fi
+done
+
+check_dependency jq
+check_dependency timeout
+
+GITLAB_FIND_JQ=$(cat <<'EOF'
+if type != "array" then error("expected a list of merge requests")
+elif length == 0 then "-", "-"
+else .[0] | (.iid // error("no iid") | tostring), (.web_url // error("no web_url"))
+end
+EOF
+)
+
+GITHUB_FIND_JQ=$(cat <<'EOF'
+if type != "array" then error("expected a list of pull requests")
+elif length == 0 then "-", "-"
+else .[0] | (.url // error("no url")), (.number // error("no number") | tostring)
+end
+EOF
+)
+
+GITLAB_JQ=$(cat <<'EOF'
+def need($k): if type == "object" and .[$k] != null then .[$k] else error("no \($k) in the response") end;
+def settling: IN("checking", "unchecked", "preparing", "approvals_syncing", "ci_must_pass", "ci_still_running");
+need("state") as $state
+| need("detailed_merge_status") as $dms
+| need("sha") as $sha
+| need("web_url") as $url
+| .head_pipeline as $p
+| if $expected != "" and $sha != $expected then
+    ["wait", "waiting for the MR to show \($expected[:8]), it shows \($sha[:8])", "-", $url, "-"]
+  elif $p == null then
+    ["wait", "no pipeline yet, merge status \($dms)", "-", $url, "-"]
+  else
+    ($p | need("id") | tostring) as $id
+    | ($p | need("status")) as $s
+    | ($p | need("sha")) as $psha
+    | ($p.web_url // $url) as $purl
+    | "pipeline \($id) \($s), merge status \($dms)" as $line
+    # Merged-results and merge-train pipelines run on a merge commit; any other
+    # pipeline on a commit that is not the MR head predates the last push.
+    | if $psha != $sha and (($p.ref // "") | test("^refs/merge-requests/[0-9]+/(merge|train)$") | not) then
+        ["wait", "pipeline \($id) is for \($psha[:8]), waiting for one on \($sha[:8])", "-", $url, "-"]
+      elif $s == "success" then
+        if $state == "merged" then ["passed", $line, "merged", $url, $id]
+        elif $state != "opened" then ["blocked", $line, "the MR is \($state)", $url, $id]
+        elif $dms == "mergeable" then ["passed", $line, "mergeable", $url, $id]
+        elif ($dms | settling) then ["wait", $line, "-", $url, $id]
+        else ["blocked", $line, $dms, $url, $id]
+        end
+      elif ($s | IN("failed", "canceled", "skipped")) then ["failed", $line, "pipeline \($s)", $purl, $id]
+      elif $s == "manual" then ["blocked", $line, "the pipeline waits for a manual job", $purl, $id]
+      else ["wait", $line, "-", $url, $id]
+      end
+  end
+| .[]
+EOF
+)
+
+GITHUB_JQ=$(cat <<'EOF'
+def need($k): if type == "object" and .[$k] != null then .[$k] else error("no \($k) in the response") end;
+def bucket:
+  if IN("SUCCESS", "NEUTRAL", "SKIPPED") then "ok"
+  elif IN("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE") then "failed"
+  else "pending"
+  end;
+def why:
+  {DIRTY: "conflicts with the base branch", BEHIND: "behind the base branch", DRAFT: "a draft",
+   BLOCKED: "a branch protection rule, such as a required review"}[.] // .;
+need("state") as $state
+| need("mergeStateStatus") as $mss
+| need("headRefOid") as $head
+| need("url") as $url
+| [need("statusCheckRollup") | .[]
+    | if .__typename == "StatusContext" then
+        {key: "status \(.context)", name: .context, state: .state, url: .targetUrl, at: .startedAt}
+      else
+        {key: "check \(.workflowName) \(.name)", name: .name, url: .detailsUrl, at: .startedAt,
+         state: (if .status == "COMPLETED" then .conclusion else .status end)}
+      end]
+| group_by(.key)
+| map(max_by(.at // "") | .bucket = (.state // "" | bucket)) as $checks
+| ($checks | map(select(.bucket == "failed"))) as $failed
+| "on \($head[:7]), merge state \($mss)" as $where
+| if $expected != "" and $head != $expected then
+    ["wait", "waiting for the PR to show \($expected[:7]), it shows \($head[:7])", "-", $url]
+  elif $checks == [] then ["wait", "no checks yet \($where)", "-", $url]
+  elif any($checks[]; .bucket == "pending") then ["wait", "checks pending \($where)", "-", $url]
+  elif $failed != [] then
+    ["failed", "checks failed \($where)", "\($failed | length) of \($checks | length) checks failed", $url]
+    + ($failed | map("  \(.name): \(.state) \(.url // "")"))
+  elif $state == "MERGED" then ["passed", "checks passed \($where)", "merged", $url]
+  elif $state != "OPEN" then ["blocked", "checks passed \($where)", "the PR is \($state | ascii_downcase)", $url]
+  elif $mss == "UNKNOWN" then ["wait", "checks passed \($where)", "-", $url]
+  elif ($mss | IN("DIRTY", "BEHIND", "DRAFT", "BLOCKED")) then
+    ["blocked", "checks passed \($where)", ($mss | why), $url]
+  else ["passed", "checks passed \($where)", $mss, $url]
+  end
+| .[]
+EOF
+)
+
+uri() { jq -rn --arg s "$1" '$s | @uri'; }
+
+stamp() { date +%H:%M:%S; }
+
+parse_remote() {
+    local url="$1" path
+    if [[ "$url" =~ ^https?://([^@/]+@)?([^/]+)/(.+)$ ]]; then
+        host="${BASH_REMATCH[2]}" path="${BASH_REMATCH[3]}"
+    elif [[ "$url" =~ ^[a-z][a-z0-9+.-]*://([^@/]+@)?([^/:]+)(:[0-9]*)?/(.+)$ ]]; then
+        host="${BASH_REMATCH[2]}" path="${BASH_REMATCH[4]}"
+    elif [[ "$url" =~ ^([^@/]+@)?([^/:]+):(.+)$ ]]; then
+        host="${BASH_REMATCH[2]}" path="${BASH_REMATCH[3]}"
+    else
+        return 1
+    fi
+    path="${path#/}"
+    path="${path%/}"
+    project="${path%.git}"
+    [[ -n "$project" ]]
+}
+
+forge="" host="" project="" mr_iid="" pr_url="" branch="" expected="" watching=""
+if [[ "$TARGET" =~ ^https?://([^/]+)/(.+)/-/merge_requests/([0-9]+)([/?#].*)?$ ]]; then
+    forge=gitlab host="${BASH_REMATCH[1]}" project="${BASH_REMATCH[2]}" mr_iid="${BASH_REMATCH[3]}"
+    watching="https://$host/$project/-/merge_requests/$mr_iid"
+elif [[ "$TARGET" =~ ^https?://([^/]+)/([^/]+/[^/]+)/pull/([0-9]+)([/?#].*)?$ ]]; then
+    forge=github pr_url="https://${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/pull/${BASH_REMATCH[3]}"
+    watching="$pr_url"
+elif [[ "$TARGET" == *://* ]]; then
+    error "Not a merge request or pull request URL: $TARGET"
+    exit 1
+else
+    check_dependency git
+    branch="$TARGET"
+    if [[ -z "$branch" ]]; then
+        branch=$(git branch --show-current 2>/dev/null) || true
+    fi
+    if [[ -z "$branch" ]]; then
+        error "Not on a branch; pass a branch or an MR or PR URL"
+        exit 1
+    fi
+    remote=$(git remote get-url origin 2>/dev/null) || true
+    if ! parse_remote "$remote"; then
+        error "Cannot tell the host and project from the origin remote; pass an MR or PR URL"
+        exit 1
+    fi
+    if [[ "$host" == *github* ]]; then forge=github; else forge=gitlab; fi
+    expected=$(git rev-parse -q --verify "refs/remotes/origin/$branch^{commit}" 2>/dev/null) || true
+fi
+
+if [[ "$forge" == github ]]; then check_dependency "$GH"; else check_dependency "$GLAB"; fi
+project_enc=$(uri "$project")
+
+err_file=$(mktemp --tmpdir ci-wait.XXXXXX)
+trap 'rm -f "$err_file"' EXIT
+
+deadline=$((SECONDS + TIMEOUT))
+strikes=0
+last_line=""
+out=""
+why=""
+fields=()
+
+error_text() {
+    local text
+    text=$(grep -v '^[[:space:]]*$' "$err_file" | paste -sd ' ') || true
+    if [[ -z "$text" ]]; then text=$(head -n 1 <<<"$out"); fi
+    echo "${text:0:300}"
+}
+
+# Stdin is /dev/null so a CLI can never wait on a prompt, and the budget keeps
+# a stalled request from outliving the deadline.
+run_probe() {
+    local budget=$((deadline - SECONDS)) status=0
+    if [[ "$budget" -gt "$PROBE_CAP" ]]; then budget="$PROBE_CAP"; fi
+    if [[ "$budget" -lt 1 ]]; then budget=1; fi
+    out=$(timeout "$budget" "$@" </dev/null 2>"$err_file") || status=$?
+    if [[ "$status" -eq 0 ]]; then return 0; fi
+    if [[ "$status" -eq 124 ]]; then
+        why="${1##*/} timed out after ${budget}s"
+    else
+        why="${1##*/} exited with $status: $(error_text)"
+    fi
+    return 1
+}
+
+parse() {
+    local parsed
+    if ! parsed=$(jq -r --arg expected "$expected" "$1" <<<"$out" 2>"$err_file"); then
+        why="unparsable response: $(error_text)"
+        return 1
+    fi
+    mapfile -t fields <<<"$parsed"
+    if [[ "${#fields[@]}" -lt 2 || -z "${fields[0]}" ]]; then
+        why="unparsable response: no data"
+        return 1
+    fi
+}
+
+announce() {
+    info "Watching $watching (timeout ${TIMEOUT}s, every ${INTERVAL}s)"
+}
+
+poll_gitlab() {
+    if [[ -z "$mr_iid" ]]; then
+        run_probe "$GLAB" api --hostname "$host" \
+            "projects/$project_enc/merge_requests?source_branch=$(uri "$branch")&state=opened&per_page=1" || return 1
+        parse "$GITLAB_FIND_JQ" || return 1
+        if [[ "${fields[0]}" == "-" ]]; then
+            error "No open merge request for branch '$branch' in $project on $host"
+            exit 3
+        fi
+        mr_iid="${fields[0]}" watching="${fields[1]}"
+        announce
+    fi
+    run_probe "$GLAB" api --hostname "$host" "projects/$project_enc/merge_requests/$mr_iid" || return 1
+    parse "$GITLAB_JQ"
+}
+
+poll_github() {
+    if [[ -z "$pr_url" ]]; then
+        run_probe "$GH" pr list -R "$host/$project" --head "$branch" --state open --json url,number --limit 1 || return 1
+        parse "$GITHUB_FIND_JQ" || return 1
+        if [[ "${fields[0]}" == "-" ]]; then
+            error "No open pull request for branch '$branch' in $project on $host"
+            exit 3
+        fi
+        pr_url="${fields[0]}" watching="${fields[0]}"
+        announce
+    fi
+    run_probe "$GH" pr view "$pr_url" --json state,url,headRefOid,mergeStateStatus,statusCheckRollup || return 1
+    parse "$GITHUB_JQ"
+}
+
+list_failed_gitlab() {
+    local kind lines
+    for kind in jobs bridges; do
+        if ! run_probe "$GLAB" api --hostname "$host" \
+            "projects/$project_enc/pipelines/${fields[4]}/$kind?scope=failed&per_page=100"; then
+            warn "Could not list the failed $kind: $why"
+        elif ! lines=$(jq -r '.[] | select(.allow_failure | not)
+                | "  \(.stage)/\(.name): \(.status) \(.downstream_pipeline.web_url // .web_url)"' \
+                <<<"$out" 2>"$err_file"); then
+            warn "Could not list the failed $kind: unparsable response: $(error_text)"
+        elif [[ -n "$lines" ]]; then
+            echo "$lines"
+        fi
+    done
+}
+
+list_failed_github() {
+    if [[ "${#fields[@]}" -gt 4 ]]; then printf '%s\n' "${fields[@]:4}"; fi
+}
+
+strike() {
+    strikes=$((strikes + 1))
+    if [[ "$strikes" -ge 3 ]]; then
+        error "Gave up after 3 failed probes in a row: $why"
+        exit 3
+    fi
+    warn "$(stamp) probe failed ($strikes/3): $why"
+}
+
+timed_out() {
+    warn "Timed out after ${TIMEOUT}s; last state: ${last_line:-none}"
+    exit 4
+}
+
+if [[ -n "$watching" ]]; then announce; fi
+
+while true; do
+    if [[ "$SECONDS" -ge "$deadline" ]]; then timed_out; fi
+    if "poll_$forge"; then
+        strikes=0
+        if [[ "${fields[1]}" != "$last_line" ]]; then
+            last_line="${fields[1]}"
+            info "$(stamp) $last_line"
+        fi
+        case "${fields[0]}" in
+            passed)  success "Passed: ${fields[2]}, ${fields[3]}"; exit 0 ;;
+            failed)  warn "Failed: ${fields[2]}, ${fields[3]}"; "list_failed_$forge"; exit 1 ;;
+            blocked) warn "Blocked: ${fields[2]}, ${fields[3]}"; exit 2 ;;
+        esac
+    else
+        strike
+    fi
+    remaining=$((deadline - SECONDS))
+    if [[ "$remaining" -le 0 ]]; then timed_out; fi
+    sleep "$((remaining < INTERVAL ? remaining : INTERVAL))"
+done
