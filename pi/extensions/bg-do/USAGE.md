@@ -82,7 +82,10 @@ Each call gets **120s** by default and **600s** max — set `timeout_seconds` (t
 an **error**, not a clamp.
 
 A snippet that exceeds its timeout is interrupted, but **the jobs keep running** — don't restart
-them. Prefer short calls: start the job in one call, then poll it in later calls
+them. A snippet the user interrupts says "Interrupted by the user, not a timeout": that is not a
+reason to shorten your waits, and its jobs keep running too.
+
+Prefer short calls: start the job in one call, then poll it in later calls
 (`bg.wait_for(id, rx, timeout=...)`, `bg.output(id)`) instead of blocking for many minutes in one.
 
 ## Rules

@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { errorText, type InterruptCause } from "./messages.ts";
 
 // Resolve sibling files relative to this module (works through the symlinked
 // extensions dir). The engine is run by xonsh; USAGE.md is referenced for agents.
@@ -33,6 +34,12 @@ interface Frame {
 	pid?: number;
 	out?: string;
 	err?: string | null;
+}
+
+interface Reply {
+	out: string;
+	err: string | null;
+	cause?: InterruptCause;
 }
 
 // Models routinely send the bash tool's `timeout` (often as a string) instead of
@@ -61,7 +68,7 @@ export default function bgDo(pi: ExtensionAPI) {
 	let enginePid: number | undefined;
 	let rxBuf = "";
 	let pending: ((frame: Frame) => void) | null = null;
-	let chain: Promise<{ out: string; err: string | null }> = Promise.resolve({ out: "", err: null });
+	let chain: Promise<Reply> = Promise.resolve({ out: "", err: null });
 
 	const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -252,14 +259,19 @@ export default function bgDo(pi: ExtensionAPI) {
 		timeoutMs: number,
 		ctx: ExtensionContext,
 		signal?: AbortSignal,
-	): Promise<{ out: string; err: string | null }> {
+	): Promise<Reply> {
 		const task = () =>
 			start(ctx).then(
 				() =>
-					new Promise<{ out: string; err: string | null }>((resolve, reject) => {
+					new Promise<Reply>((resolve, reject) => {
 						if (!conn) return reject(new Error("no xonsh connection"));
 						let done = false;
-						const t1 = setTimeout(() => sigEngine("SIGINT"), timeoutMs);
+						let cause: InterruptCause | undefined;
+						const interrupt = (why: InterruptCause) => {
+							cause ??= why;
+							sigEngine("SIGINT");
+						};
+						const t1 = setTimeout(() => interrupt("timeout"), timeoutMs);
 						const t2 = setTimeout(() => {
 							if (done) return;
 							done = true;
@@ -274,7 +286,7 @@ export default function bgDo(pi: ExtensionAPI) {
 								),
 							);
 						}, timeoutMs + 5000);
-						const onAbort = () => sigEngine("SIGINT");
+						const onAbort = () => interrupt("user");
 						signal?.addEventListener("abort", onAbort, { once: true });
 						pending = (frame: Frame) => {
 							if (done) return;
@@ -282,7 +294,7 @@ export default function bgDo(pi: ExtensionAPI) {
 							clearTimeout(t1);
 							clearTimeout(t2);
 							signal?.removeEventListener("abort", onAbort);
-							resolve({ out: frame.out ?? "", err: frame.err ?? null });
+							resolve({ out: frame.out ?? "", err: frame.err ?? null, cause });
 						};
 						conn.write(`${Buffer.from(JSON.stringify({ code }), "utf8").toString("base64")}\n`);
 					}),
@@ -351,13 +363,9 @@ export default function bgDo(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const timeoutMs = resolveTimeoutS(params as unknown as Record<string, unknown>) * 1000;
-			const { out, err } = await sendCode(params.code, timeoutMs, ctx, signal);
+			const { out, err, cause } = await sendCode(params.code, timeoutMs, ctx, signal);
 			if (err) {
-				// Make the interrupt self-explanatory: the snippet was cut, the jobs were not.
-				const detail =
-					err.trim() === "Interrupted (timeout)"
-						? `Interrupted: snippet hit the ${Math.round(timeoutMs / 1000)}s bg_do timeout. Background jobs are still running — poll them (bg.list/bg.output/bg.wait_for) in another call, and pass timeout_seconds to wait longer.`
-						: err;
+				const detail = errorText({ err, cause, timeoutS: Math.round(timeoutMs / 1000) });
 				const combined = (out ? `${out}\n` : "") + detail;
 				throw new Error(truncateOut(combined));
 			}
