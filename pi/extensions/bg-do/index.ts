@@ -17,13 +17,14 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { errorText, type InterruptCause } from "./messages.ts";
+import { apiBlock, errorText, type InterruptCause } from "./messages.ts";
 
 // Resolve sibling files relative to this module (works through the symlinked
 // extensions dir). The engine is run by xonsh; USAGE.md is referenced for agents.
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENGINE_SRC = readFileSync(join(HERE, "bg_engine.xsh"), "utf8");
 const USAGE_PATH = join(HERE, "USAGE.md");
+const API_BLOCK = apiBlock(readFileSync(USAGE_PATH, "utf8"));
 
 const DEFAULT_TIMEOUT_S = 120;
 const MAX_TIMEOUT_S = 600;
@@ -348,7 +349,8 @@ export default function bgDo(pi: ExtensionAPI) {
 		description: [
 			"LONG-RUNNING / non-terminating commands only (servers, watchers, `tail -f`, builds): xonsh",
 			"code-mode with an injected `bg` API. One-shot commands: use the `bash` tool.",
-			`Full usage + API, read first: ${USAGE_PATH}`,
+			...(API_BLOCK ? ["`bg` API:", API_BLOCK] : []),
+			`Full usage, pipes and examples, read first: ${USAGE_PATH}`,
 		].join("\n"),
 		promptSnippet: "Background long-running commands (`bg` API).",
 		parameters: Type.Object({
@@ -365,7 +367,7 @@ export default function bgDo(pi: ExtensionAPI) {
 			const timeoutMs = resolveTimeoutS(params as unknown as Record<string, unknown>) * 1000;
 			const { out, err, cause } = await sendCode(params.code, timeoutMs, ctx, signal);
 			if (err) {
-				const detail = errorText({ err, cause, timeoutS: Math.round(timeoutMs / 1000) });
+				const detail = errorText({ code: params.code, err, cause, timeoutS: Math.round(timeoutMs / 1000) });
 				const combined = (out ? `${out}\n` : "") + detail;
 				throw new Error(truncateOut(combined));
 			}

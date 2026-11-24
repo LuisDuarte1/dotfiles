@@ -74,7 +74,11 @@ def _register(jid, pid, path, cmd):
 
 class _BG:
     def __init__(self): self._jobs = {}; self._n = 0
-    def run(self, cmd, cwd=None):
+    def run(self, cmd, cwd=None, name=None):
+        # Models guess name= (ignored: ids stay bg-N) and run(name, cmd), which puts the
+        # command in cwd; refuse that here rather than start a job that dies on `cd`.
+        if cwd is not None and not os.path.isdir(os.path.expanduser(os.path.expandvars(cwd))):
+            raise ValueError('bg.run(cmd, cwd=None): cwd %r is not a directory (the command comes first)' % (cwd,))
         self._n += 1; jid = 'bg-%d' % self._n
         j = _Job(jid, cmd, cwd); self._jobs[jid] = j
         pid = getattr(j.proc, 'pid', None)
@@ -84,12 +88,15 @@ class _BG:
               % (jid, pid, j._path, cmd if len(cmd) <= 120 else cmd[:117] + '...'))
         _register(jid, pid, j._path, cmd)
         return jid
+    start = run
     def get(self, jid): return self._jobs[jid]
     def output(self, jid, mode='new'):
         j = self._jobs[jid]; lines = j._all_lines()
         if mode == 'all': return list(lines)
         out = lines[j._cursor:]; j._cursor = len(lines); return out
     def lines(self, jid): return self._jobs[jid]._all_lines()
+    def tail(self, jid, n=20):
+        return '\n'.join(self._jobs[jid]._all_lines()[-n:]) if n > 0 else ''
     def wait_for(self, jid, pattern, timeout=10.0):
         j = self._jobs[jid]
         rx = re.compile(pattern) if isinstance(pattern, str) else pattern

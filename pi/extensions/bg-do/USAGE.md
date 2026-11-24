@@ -36,8 +36,10 @@ ordering matters within one call, stick to one or the other (e.g. all pipelines,
 ## The `bg` API
 ```
 bg.run(cmd, cwd=None) -> str            # start a shell command in the background; returns a job id ("bg-1")
+bg.start(cmd, cwd=None) -> str          # alias of bg.run; both ignore name=. The command comes first
 bg.output(id, mode="new") -> list[str]  # Python list of lines. "new" = since last read (poll); "all" = everything
 bg.lines(id) -> list[str]               # all lines so far (Python list)
+bg.tail(id, n=20) -> str                # last n lines as one string, ready to print
 bg.wait_for(id, regex, timeout=10.0) -> str | None   # block until a line matches; returns that line or None
 bg.wait(id, timeout=None) -> dict       # block until the job exits; returns a snapshot
 bg.kill(id, sig="TERM") -> True         # terminate the job (whole process group)
@@ -61,6 +63,9 @@ bgout @(jid) | grep -i error | head              # native pipe; output is return
 bgout @(jid) | grep -i error | awk '{print $2}' | tail -1
 n = $(bgout @(jid) | grep -c warning); print(n)  # capture a pipeline into a Python value
 ```
+
+`$(...)` takes **one** command or pipeline: `$(cd x && make)` is a SyntaxError. Chain with
+`$(bash -c 'cd x && make')`, or pass `cwd=` to `bg.run`.
 
 Or operate on the backing file directly:
 ```python
