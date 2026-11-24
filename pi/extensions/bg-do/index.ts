@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { decodeFrame, type NotifyEvent, notifyMessage, routeFrame } from "./frames.ts";
 import { apiBlock, errorText, type InterruptCause } from "./messages.ts";
 
 // Resolve sibling files relative to this module (works through the symlinked
@@ -31,8 +32,6 @@ const MAX_TIMEOUT_S = 600;
 const READY_TIMEOUT_MS = 20000;
 
 interface Frame {
-	ready?: boolean;
-	pid?: number;
 	out?: string;
 	err?: string | null;
 }
@@ -130,8 +129,17 @@ export default function bgDo(pi: ExtensionAPI) {
 		if (p) p({ err: `bg_do connection dropped${orphanJobs()}` });
 	}
 
+	function deliverNotify(event: NotifyEvent) {
+		try {
+			pi.sendMessage(
+				{ customType: "bg-do-notify", content: notifyMessage(event), display: true },
+				{ triggerTurn: true, deliverAs: "steer" },
+			);
+		} catch {}
+	}
+
 	// Parse framed messages on a connected socket. `onReady` fires on the ready
-	// handshake (carrying the engine pid); other frames resolve the pending call.
+	// handshake (carrying the engine pid); replies resolve the pending call.
 	function attach(socket: Socket, onReady: (pid?: number) => void) {
 		conn = socket;
 		rxBuf = "";
@@ -143,18 +151,15 @@ export default function bgDo(pi: ExtensionAPI) {
 				const line = rxBuf.slice(0, idx);
 				rxBuf = rxBuf.slice(idx + 1);
 				if (line.trim()) {
-					let frame: Frame | null = null;
-					try {
-						frame = JSON.parse(Buffer.from(line, "base64").toString("utf8")) as Frame;
-					} catch {
-						frame = null;
-					}
-					if (frame?.ready) {
-						onReady(frame.pid);
-					} else if (frame) {
+					const routed = routeFrame(decodeFrame(line));
+					if (routed.kind === "ready") {
+						onReady(routed.pid);
+					} else if (routed.kind === "notify") {
+						deliverNotify(routed.event);
+					} else if (routed.kind === "reply") {
 						const p = pending;
 						pending = null;
-						if (p) p(frame);
+						if (p) p(routed);
 					}
 				}
 				idx = rxBuf.indexOf("\n");
@@ -349,6 +354,8 @@ export default function bgDo(pi: ExtensionAPI) {
 		description: [
 			"LONG-RUNNING / non-terminating commands only (servers, watchers, `tail -f`, builds): xonsh",
 			"code-mode with an injected `bg` API. One-shot commands: use the `bash` tool.",
+			"To wait more than 2 minutes, do not block: `bg.notify(id)` (or `bg.notify(id, regex)`) and end your turn;",
+			"a message starts the next turn when the job exits or a line matches.",
 			...(API_BLOCK ? ["`bg` API:", API_BLOCK] : []),
 			`Full usage, pipes and examples, read first: ${USAGE_PATH}`,
 		].join("\n"),

@@ -42,6 +42,7 @@ bg.lines(id) -> list[str]               # all lines so far (Python list)
 bg.tail(id, n=20) -> str                # last n lines as one string, ready to print
 bg.wait_for(id, regex, timeout=10.0) -> str | None   # block until a line matches; returns that line or None
 bg.wait(id, timeout=None) -> dict       # block until the job exits; returns a snapshot
+bg.notify(id, regex=None) -> None       # one message when the job exits or a line matches; then end your turn
 bg.kill(id, sig="TERM") -> True         # terminate the job (whole process group)
 bg.get(id).snapshot() -> dict           # {id, cmd, running, returncode, lines, path}
 bg.list() -> [snapshot]                 # all jobs this session
@@ -49,7 +50,23 @@ bg.path(id) -> str                      # backing log file (stdout+stderr merged
 ```
 
 To wait, block on an *event*: `bg.wait_for(id, regex)` (until a matching line appears) or
-`bg.wait(id, timeout=...)` (until the job exits).
+`bg.wait(id, timeout=...)` (until the job exits). For anything longer than 2 minutes, do not
+block at all: `bg.notify` the job and end your turn (next section).
+
+## Long waits: `bg.notify`, then end your turn
+`bg.notify(id)` registers a one-shot notification for when the job exits; `bg.notify(id, regex)`
+fires on the first output line that matches, or on exit if none does (lines already printed
+count, so a match that happened before the call fires at once). It prints a confirmation and
+returns at once. **End your turn after it.** When it fires, a message starts your next turn with
+the job id, its command, the exit code or the matched line, and the last ten lines of output:
+```python
+jid = bg.run("bazel test //... 2>&1")
+bg.notify(jid)                                  # message on exit
+srv = bg.run("npm run dev")
+bg.notify(srv, r"listening on|error")          # message on the first matching line
+```
+Each call fires once; call it again to wait for the next event. A pending notification survives a
+pi `/reload`: the engine holds it and delivers it when pi reattaches.
 
 ## Pipes: reading a job's output with shell tools
 `bg.output(id)` / `bg.lines(id)` return a **Python list** — so `bg.output(id) | grep` does
@@ -91,13 +108,14 @@ them. A snippet the user interrupts says "Interrupted by the user, not a timeout
 reason to shorten your waits, and its jobs keep running too.
 
 Prefer short calls: start the job in one call, then poll it in later calls
-(`bg.wait_for(id, rx, timeout=...)`, `bg.output(id)`) instead of blocking for many minutes in one.
+(`bg.wait_for(id, rx, timeout=...)`, `bg.output(id)`) instead of blocking for many minutes in one,
+and `bg.notify` anything longer than 2 minutes.
 
 ## Rules
 - Do **NOT** use the `subprocess` module, `Popen`, `os.system`, `os.fork`, or `multiprocessing`.
   Manage every process through the `bg` API.
 - To wait, block on an event: `bg.wait_for(id, regex)` for a readiness/error line, or
-  `bg.wait(id, timeout=...)` for completion.
+  `bg.wait(id, timeout=...)` for completion. Over 2 minutes: `bg.notify(id)` and end your turn.
 - Use `print(...)` for Python values; write bare pipelines for shell output.
 - For **streaming** pipes, force line-buffering so `wait_for`/`output` see lines promptly:
   `bg.run("tail -f app.log | grep --line-buffered -i error")` or wrap a tool with `stdbuf -oL`.

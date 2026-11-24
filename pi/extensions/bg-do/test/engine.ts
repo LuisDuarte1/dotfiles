@@ -31,7 +31,7 @@ export class Client {
 	closed = false;
 	readonly socket: Socket;
 	private buf = "";
-	private cursor = 0;
+	private taken = new Set<number>();
 
 	constructor(socket: Socket) {
 		this.socket = socket;
@@ -54,14 +54,16 @@ export class Client {
 		socket.on("error", () => {});
 	}
 
+	// Returns the oldest matching frame not returned before, so waiting for a reply
+	// never skips an event that arrived ahead of it.
 	async next(pred: (f: Frame) => boolean, what: string, ms?: number): Promise<Frame> {
 		let hit: Frame | undefined;
 		await until(
 			() => {
-				const i = this.frames.findIndex((f, n) => n >= this.cursor && pred(f));
+				const i = this.frames.findIndex((f, n) => !this.taken.has(n) && pred(f));
 				if (i < 0) return false;
 				hit = this.frames[i];
-				this.cursor = i + 1;
+				this.taken.add(i);
 				return true;
 			},
 			what,

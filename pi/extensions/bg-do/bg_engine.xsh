@@ -1,5 +1,5 @@
 import threading, time, re, shutil, os, signal as _signal, tempfile
-import socket, json, base64, io, contextlib, traceback
+import socket, json, base64, io, contextlib, traceback, codecs
 
 _HAVE_SETSID = shutil.which('setsid') is not None
 
@@ -72,8 +72,51 @@ def _register(jid, pid, path, cmd):
     except Exception:
         pass
 
+def _tail(path, n):
+    try:
+        with open(path, 'rb') as fh:
+            fh.seek(0, 2); size = fh.tell(); fh.seek(max(0, size - 65536)); data = fh.read()
+    except OSError:
+        return []
+    lines = data.decode('utf-8', 'replace').split('\n')
+    if lines and lines[-1] == '': lines.pop()
+    if size > 65536 and lines: lines.pop(0)
+    return [ln[:2000] for ln in lines[-n:]]
+
+class _Watch:
+    # One-shot: fires on the first matching line, or on exit. It reads the log by byte
+    # offset, so a long build is scanned once rather than reread on every tick.
+    def __init__(self, job, rx):
+        self.job = job; self.rx = rx; self.pos = 0; self.part = ''
+        self.dec = codecs.getincrementaldecoder('utf-8')('replace')
+    def scan(self, final):
+        try:
+            fh = open(self.job._path, 'rb')
+        except OSError:
+            return None
+        with fh:
+            fh.seek(self.pos)
+            while True:
+                data = fh.read(1 << 20); self.pos += len(data)
+                lines = (self.part + self.dec.decode(data, final and not data)).split('\n')
+                self.part = lines.pop()[-65536:]
+                for ln in lines:
+                    if self.rx.search(ln): return ln[:2000]
+                if not data: break
+        if self.part and self.rx.search(self.part): return self.part[:2000]
+        return None
+    def check(self):
+        done = self.job.done
+        line = self.scan(done) if self.rx is not None else None
+        if line is None and not done: return None
+        j = self.job
+        return {'event': 'notify', 'id': j.id, 'cmd': j.cmd, 'reason': 'exit' if line is None else 'match',
+                'returncode': j.returncode if j.done else None, 'line': line, 'tail': _tail(j._path, 10)}
+
+_WATCH_LOCK = threading.Lock()
+
 class _BG:
-    def __init__(self): self._jobs = {}; self._n = 0
+    def __init__(self): self._jobs = {}; self._n = 0; self._watches = []
     def run(self, cmd, cwd=None, name=None):
         # Models guess name= (ignored: ids stay bg-N) and run(name, cmd), which puts the
         # command in cwd; refuse that here rather than start a job that dies on `cd`.
@@ -126,6 +169,12 @@ class _BG:
         return True
     def list(self): return [j.snapshot() for j in self._jobs.values()]
     def path(self, jid): return self._jobs[jid]._path
+    def notify(self, jid, regex=None):
+        j = self._jobs[jid]
+        rx = None if regex is None else re.compile(regex)
+        with _WATCH_LOCK: self._watches.append(_Watch(j, rx))
+        on = 'exit' if rx is None else 'exit or a line matching %r' % rx.pattern
+        print('[bg] notify %s on %s: end your turn, the message will start the next one' % (jid, on))
 
 bg = _BG()
 
@@ -213,6 +262,62 @@ def _run_code(code):
         out += '[bg] jobs: %s\n' % tail
     return out, err
 
+# The notifier thread and the serve loop both write frames, so every write holds
+# _WLOCK and uses sendall: a frame that is cut or interleaved breaks the stream.
+_WLOCK = threading.Lock()
+_CLIENT = [None]
+_QUEUE = []
+
+def _frame(obj):
+    return base64.b64encode(json.dumps(obj).encode()) + b'\n'
+
+def _emit(evt):
+    with _WLOCK:
+        c = _CLIENT[0]
+        if c is not None:
+            try:
+                c.sendall(_frame(evt)); return
+            except Exception:
+                _CLIENT[0] = None
+        _QUEUE.append(evt); del _QUEUE[:-100]
+
+def _attach(conn):
+    with _WLOCK:
+        try:
+            conn.sendall(_frame({'ready': True, 'pid': os.getpid()}))
+            while _QUEUE:
+                conn.sendall(_frame(_QUEUE[0])); _QUEUE.pop(0)
+        except Exception:
+            return False
+        _CLIENT[0] = conn
+        return True
+
+def _detach(conn):
+    with _WLOCK:
+        if _CLIENT[0] is conn: _CLIENT[0] = None
+    try: conn.close()
+    except Exception: pass
+
+def _reply(conn, obj):
+    with _WLOCK:
+        try:
+            conn.sendall(_frame(obj)); return True
+        except Exception:
+            return False
+
+def _notifier():
+    while True:
+        time.sleep(0.1)
+        with _WATCH_LOCK: watches = list(bg._watches)
+        for w in watches:
+            try:
+                evt = w.check()
+                if evt is None: continue
+                _emit(evt)
+                with _WATCH_LOCK: bg._watches.remove(w)
+            except Exception:
+                pass
+
 # Persistent server: survives client (extension) disconnects so jobs live across
 # a pi /reload. Self-exits (killing jobs) if no client reconnects within IDLE.
 def _serve():
@@ -229,13 +334,9 @@ def _serve():
         except socket.timeout:
             _kill_all_jobs(); break
         conn.settimeout(None)
-        f = conn.makefile('rwb', buffering=0)
-        try:
-            f.write(base64.b64encode(json.dumps({'ready': True, 'pid': os.getpid()}).encode()) + b'\n')
-        except Exception:
-            try: conn.close()
-            except Exception: pass
-            continue
+        f = conn.makefile('rb', buffering=0)
+        if not _attach(conn):
+            _detach(conn); continue
         _exit = False
         while True:
             # Read requests one frame at a time so an interrupt arriving between
@@ -259,15 +360,13 @@ def _serve():
                 out, err = _run_code(req.get('code', ''))
             except KeyboardInterrupt:
                 out, err = '', 'Interrupted (timeout)'
-            try:
-                f.write(base64.b64encode(json.dumps({'out': out, 'err': err}).encode()) + b'\n')
-            except Exception:
+            if not _reply(conn, {'out': out, 'err': err}):
                 break
-        try: conn.close()
-        except Exception: pass
+        _detach(conn)
         if _exit:
             break
     try: os.unlink(path)
     except Exception: pass
 
+threading.Thread(target=_notifier, daemon=True).start()
 _serve()
