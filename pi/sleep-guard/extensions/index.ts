@@ -29,10 +29,10 @@ const HOW_TO_WAIT =
 	"`# guard:allow-sleep <why>` in the command.";
 
 const REASONS: Record<number, string> = {
-	[R1_STALL]: `Blind sleep >15s: it stalls the session and races whatever you check next. ${HOW_TO_WAIT}`,
-	[R2_SLEEP_THEN_ACT]: `Sleep-then-act (>5s before the real command): the wait is a guess, so the check can run too early. ${HOW_TO_WAIT}`,
+	[R1_STALL]: `Blind wait >15s: it stalls the session and races whatever you check next. ${HOW_TO_WAIT}`,
+	[R2_SLEEP_THEN_ACT]: `Wait-then-act (>5s before the real command): the wait is a guess, so the check can run too early. ${HOW_TO_WAIT}`,
 	[R3_COARSE_POLL]: `Poll interval >30s inside the loop: poll every few seconds so the result is fresh. ${HOW_TO_WAIT}`,
-	[R4_UNBOUNDED]: `Sleep with a non-numeric/suffixed duration is unbounded from here. ${HOW_TO_WAIT}`,
+	[R4_UNBOUNDED]: `Blind wait with a non-numeric/suffixed duration is unbounded from here. ${HOW_TO_WAIT}`,
 	[UNTERMINATED_HEREDOC]:
 		"Unterminated here-document: the heredoc is opened but never closed, so bash reads to " +
 		"end-of-input (`warning: here-document delimited by end-of-file`) and the command runs with " +

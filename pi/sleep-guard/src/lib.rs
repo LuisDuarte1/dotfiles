@@ -1,5 +1,5 @@
-//! Classifies shell commands for blind `sleep` use. Rules live here rather than in the
-//! extension so they are unit-testable on the host and identical in the wasm build.
+//! Classifies shell commands for blind waits (`sleep` and its disguises). Rules live here rather
+//! than in the extension so they are unit-testable on the host and identical in the wasm build.
 
 use brush_parser::{Parser, ParserOptions, ast};
 
@@ -22,6 +22,8 @@ const R3_MAX: f64 = 30.0;
 const SHELLS: [&str; 5] = ["sh", "bash", "zsh", "dash", "ksh"];
 const WRAPPERS: [&str; 7] = ["timeout", "nohup", "env", "nice", "sudo", "stdbuf", "xargs"];
 const INTERPRETERS: [&str; 6] = ["python", "python3", "node", "bun", "perl", "ruby"];
+const BLIND_STDIN: [&str; 2] = ["/dev/zero", "/dev/null"];
+const GREPS: [&str; 4] = ["grep", "egrep", "fgrep", "rg"];
 
 struct Cmd {
     name: String,
@@ -105,23 +107,44 @@ fn collect(src: &str, in_loop: bool, depth: usize, out: &mut Vec<Cmd>) -> Result
 
 fn walk_list(l: &ast::CompoundList, in_loop: bool, depth: usize, out: &mut Vec<Cmd>) {
     for item in &l.0 {
-        for c in &item.0.first.seq {
-            walk_cmd(c, in_loop, depth, out);
-        }
+        walk_pipeline(&item.0.first, in_loop, depth, out);
         for ao in &item.0.additional {
             let p = match ao {
                 ast::AndOr::And(p) | ast::AndOr::Or(p) => p,
             };
-            for c in &p.seq {
-                walk_cmd(c, in_loop, depth, out);
-            }
+            walk_pipeline(p, in_loop, depth, out);
         }
     }
 }
 
-fn walk_cmd(c: &ast::Command, in_loop: bool, depth: usize, out: &mut Vec<Cmd>) {
+fn walk_pipeline(p: &ast::Pipeline, in_loop: bool, depth: usize, out: &mut Vec<Cmd>) {
+    for (i, c) in p.seq.iter().enumerate() {
+        let drained = p.seq[i + 1..].iter().any(ends_early);
+        walk_cmd(c, in_loop, depth, drained, out);
+    }
+}
+
+/// A consumer that exits on its own takes the `tail -f` feeding it down with SIGPIPE,
+/// so `timeout N tail -f … | grep -m1 ready` ends on the event, not after N seconds.
+fn ends_early(c: &ast::Command) -> bool {
+    let ast::Command::Simple(s) = c else { return false };
+    let Some((name, args)) = words(s) else { return false };
+    let stops = |a: &String| {
+        matches!(a.as_str(), "--quiet" | "--silent") || a.starts_with("--max-count") || short_flag(a, "mq", "efmABCdD")
+    };
+    name == "head" || (GREPS.contains(&name.as_str()) && args.iter().take_while(|a| *a != "--").any(stops))
+}
+
+/// Letters after an option that takes a value belong to that value, so in `grep -eq` the
+/// `q` is the pattern, not `--quiet`.
+fn short_flag(arg: &str, flags: &str, valued: &str) -> bool {
+    let Some(cluster) = arg.strip_prefix('-').filter(|c| !c.starts_with('-')) else { return false };
+    cluster.chars().find(|c| flags.contains(*c) || valued.contains(*c)).is_some_and(|c| flags.contains(c))
+}
+
+fn walk_cmd(c: &ast::Command, in_loop: bool, depth: usize, drained: bool, out: &mut Vec<Cmd>) {
     match c {
-        ast::Command::Simple(s) => simple(s, in_loop, depth, out),
+        ast::Command::Simple(s) => simple(s, in_loop, depth, drained, out),
         ast::Command::Compound(cc, _) => compound(cc, in_loop, depth, out),
         ast::Command::Function(f) => compound(&f.body.0, in_loop, depth, out),
         ast::Command::ExtendedTest(..) => {}
@@ -153,19 +176,72 @@ fn compound(c: &ast::CompoundCommand, in_loop: bool, depth: usize, out: &mut Vec
                 }
             }
         }
-        C::Coprocess(cp) => walk_cmd(&cp.body, in_loop, depth, out),
+        C::Coprocess(cp) => walk_cmd(&cp.body, in_loop, depth, false, out),
         C::Arithmetic(_) => {}
     }
 }
 
-fn simple(cmd: &ast::SimpleCommand, in_loop: bool, depth: usize, out: &mut Vec<Cmd>) {
-    let Some(raw_name) = cmd.word_or_name.as_ref().map(|w| w.value.clone()) else { return };
+fn words(cmd: &ast::SimpleCommand) -> Option<(String, Vec<String>)> {
+    let raw_name = cmd.word_or_name.as_ref()?.value.clone();
     let mut args: Vec<String> = vec![];
     if let Some(sfx) = &cmd.suffix {
         for item in &sfx.0 {
             if let ast::CommandPrefixOrSuffixItem::Word(w) = item {
                 args.push(w.value.clone());
             }
+        }
+    }
+    Some((raw_name, args))
+}
+
+/// `read -t N` never sees a newline from /dev/zero, so it is `sleep N` in disguise; from
+/// /dev/null it returns at once, but the intent is the same blind wait.
+fn blind_read(cmd: &ast::SimpleCommand, args: &[String]) -> Option<String> {
+    use ast::{
+        CommandPrefixOrSuffixItem as I, IoFileRedirectKind as K, IoFileRedirectTarget as T, IoRedirect as R,
+    };
+    let mut items = cmd.prefix.iter().flat_map(|p| &p.0).chain(cmd.suffix.iter().flat_map(|s| &s.0));
+    let blind = items.any(|i| match i {
+        I::IoRedirect(R::File(fd, K::Read | K::ReadAndWrite, T::Filename(w))) => {
+            fd.unwrap_or(0) == 0 && BLIND_STDIN.contains(&unquote(&w.value).as_str())
+        }
+        _ => false,
+    });
+    if !blind {
+        return None;
+    }
+    let mut it = args.iter();
+    while let Some(flags) = it.next().and_then(|a| a.strip_prefix('-')) {
+        if let Some(i) = flags.find(|c| "adinNptu".contains(c)) {
+            let val = if i + 1 < flags.len() { flags[i + 1..].to_string() } else { it.next()?.clone() };
+            if flags[i..].starts_with('t') {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+/// `tail --pid` ends with that process, so only a plain follow waits out the whole timeout.
+/// `-k` and `-s` take a value of their own, which must not be mistaken for the duration.
+fn blind_tail(args: &[String]) -> Option<String> {
+    let mut i = 0;
+    while args.get(i).is_some_and(|a| a.starts_with('-')) {
+        i += if matches!(args[i].as_str(), "-k" | "-s" | "--kill-after" | "--signal") { 2 } else { 1 };
+    }
+    let dur = args.get(i)?;
+    let (cmd, rest) = args.get(i + 1..)?.split_first()?;
+    let follows = rest.iter().any(|a| a.starts_with("--follow") || short_flag(a, "fF", "cns"));
+    let pid = rest.iter().any(|a| a.starts_with("--pid"));
+    (cmd == "tail" && follows && !pid).then(|| dur.clone())
+}
+
+fn simple(cmd: &ast::SimpleCommand, in_loop: bool, depth: usize, drained: bool, out: &mut Vec<Cmd>) {
+    let Some((raw_name, args)) = words(cmd) else { return };
+    if raw_name == "timeout" && !drained {
+        if let Some(n) = blind_tail(&args) {
+            out.push(Cmd { name: "sleep".into(), arg: n, in_loop });
+            return;
         }
     }
 
@@ -184,6 +260,12 @@ fn simple(cmd: &ast::SimpleCommand, in_loop: bool, depth: usize, out: &mut Vec<C
         (raw_name, args)
     };
 
+    if name == "read" {
+        if let Some(n) = blind_read(cmd, &args) {
+            out.push(Cmd { name: "sleep".into(), arg: n, in_loop });
+            return;
+        }
+    }
     if name == "sleep" {
         out.push(Cmd { name, arg: args.first().cloned().unwrap_or_default(), in_loop });
         return;
@@ -301,6 +383,70 @@ mod tests {
         check(ALLOW, "pkill -9 -f workerd; sleep 1; pgrep -c workerd");
         check(ALLOW, "timeout 300 curl -s http://x");
         check(ALLOW, "for i in $(seq 1 40); do s=$(glab api jobs/1); sleep 15; done");
+    }
+
+    #[test]
+    fn the_readme_allowed_examples_stay_allowed() {
+        check(ALLOW, "for i in $(seq 1 60); do glab ci status | grep -q success && break; sleep 5; done");
+        check(ALLOW, "while ! curl -s localhost:8080; do sleep 2; done");
+        check(ALLOW, "(nohup node build.mjs &) ; sleep 2; echo started");
+        check(ALLOW, "pkill -9 -f workerd; sleep 1; pgrep -c workerd");
+        check(ALLOW, r#"pkill -f "sleep 300""#);
+        check(ALLOW, "python3 - <<'PY'\nprint(\"sleep 300\")\nPY\n");
+        check(ALLOW, "read -t 5 < /dev/zero");
+        check(ALLOW, "read -t 300 line < some.fifo");
+        check(ALLOW, "read -r line");
+        check(ALLOW, "timeout 60 tail -f log | grep -m1 ready");
+        check(ALLOW, "timeout 5 tail -f log");
+        check(ALLOW, "timeout 1500 tail --pid=63681 -f /dev/null");
+    }
+
+    #[test]
+    fn blind_read_is_a_sleep() {
+        check(R1_STALL, "read -t 840 < /dev/zero 2>/dev/null; ~/.cache/bench/status.sh");
+        check(R1_STALL, "cd ~/bench && read -t 840 < /dev/zero 2>/dev/null; date +%T");
+        check(R1_STALL, "read -r -t 300 _ </dev/null || true");
+        check(R1_STALL, "read -rt 60 0</dev/zero");
+        check(R1_STALL, "read -p go -t60 < '/dev/zero'");
+        check(R1_STALL, "timeout 900 bash -c 'read -t 840 < /dev/zero'");
+        check(R2_SLEEP_THEN_ACT, "read -t 6 < /dev/zero; check");
+        check(R3_COARSE_POLL, "until grep -q EXIT l; do read -t 60 < /dev/zero; done");
+        check(R4_UNBOUNDED, "read -t $WAIT < /dev/zero; check");
+        assert_eq!(classify_snippet("bg.run(\"read -t 600 < /dev/zero; check\")"), R1_STALL);
+    }
+
+    #[test]
+    fn reads_that_wait_on_input_are_not_sleeps() {
+        check(ALLOW, "read -t 300 line < some.fifo; echo $line");
+        check(ALLOW, "read -t 300 -p 'continue? ' answer");
+        check(ALLOW, "read -t 300 < <(:); check");
+        check(ALLOW, "read -d '' -r body < /dev/null; echo \"$body\"");
+        check(ALLOW, "read -t 300 2>/dev/null; check");
+        check(ALLOW, "until grep -q EXIT l; do read -t 30 < /dev/zero 2>/dev/null; done; true");
+        check(ALLOW, "for i in $(seq 50); do pgrep x || break; read -t 0.5 < /dev/zero; done");
+    }
+
+    #[test]
+    fn blind_tail_is_a_sleep() {
+        check(R1_STALL, "timeout 300 tail -f log");
+        check(R1_STALL, "timeout 60 tail -n0 -F log | grep --line-buffered ready");
+        check(R1_STALL, "timeout 60 tail -f log | grep -emissing");
+        check(R1_STALL, "timeout -s INT 60 tail -fn0 log 2>&1 | tee out");
+        check(R1_STALL, "timeout --kill-after 5 60 tail --follow=name log > out");
+        check(R2_SLEEP_THEN_ACT, "timeout 10 tail -f log; check");
+        check(R3_COARSE_POLL, "for f in a b; do timeout 60 tail -f $f; done");
+        check(R4_UNBOUNDED, "timeout 5m tail -f log");
+    }
+
+    #[test]
+    fn tails_that_end_on_an_event_are_not_sleeps() {
+        check(ALLOW, "timeout 60 tail -f log | grep -m 1 ready; check");
+        check(ALLOW, "timeout 60 tail -f log | grep -Eq 'ready|failed' && check");
+        check(ALLOW, "timeout 60 tail -F log | grep --max-count=1 ready");
+        check(ALLOW, "timeout 60 tail -f log | grep --line-buffered x | head -5");
+        check(ALLOW, "timeout 60 tail -n 50 log; check");
+        check(ALLOW, "timeout 600 pnpm exec vitest run 2>&1 | tail -60");
+        check(ALLOW, "timeout 60 bash -c 'tail -f log | grep -m1 ready'");
     }
 
     #[test]

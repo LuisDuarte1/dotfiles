@@ -15,12 +15,16 @@ guessed moment, reads a half-finished state, and the model concludes the job die
 
 ## What it blocks
 
+A **blind wait** is `sleep N`, or one of its disguises: `read -t N` with stdin from `/dev/zero` or
+`/dev/null`, and `timeout N tail -f` with no `grep -m`, `grep -q` or `head` after it in the pipeline
+(nothing ends it early, so it runs the full N). All three go through the same rules:
+
 | rule | condition | example |
 |---|---|---|
-| R1 | sleep > 15s outside a loop | `sleep 290; glab ci status` |
-| R2 | leading sleep > 5s with work after it | `sleep 6; check` |
-| R3 | sleep > 30s inside a loop body | `for …; do check && break; sleep 60; done` |
-| R4 | non-numeric duration | `sleep $WAIT`, `sleep 5m` |
+| R1 | blind wait > 15s outside a loop | `sleep 290; glab ci status`, `read -t 840 < /dev/zero; ./status.sh` |
+| R2 | leading blind wait > 5s with work after it | `sleep 6; check`, `timeout 10 tail -f log; check` |
+| R3 | blind wait > 30s inside a loop body | `for …; do check && break; sleep 60; done` |
+| R4 | non-numeric duration | `sleep $WAIT`, `sleep 5m`, `timeout 5m tail -f log` |
 | — | unterminated here-document | `git commit -F - <<'EOF' && git log` |
 
 The heredoc rule is a freebie from having a parser: the model emits that shape often enough that bash
@@ -38,6 +42,12 @@ while ! curl -s localhost:8080; do sleep 2; done
 pkill -9 -f workerd; sleep 1; pgrep -c workerd
 pkill -f "sleep 300"          # a quoted pattern is not a sleep
 python3 - <<'PY' … "sleep 300" … PY   # heredoc bodies are data
+read -t 5 < /dev/zero                     # short, like sleep 5
+read -t 300 line < some.fifo              # waits for a writer, not the clock
+read -r line
+timeout 60 tail -f log | grep -m1 ready   # grep exits on the line and takes tail with it
+timeout 5 tail -f log
+timeout 1500 tail --pid=$PID -f /dev/null # ends when the process does
 ```
 
 Measured over the last 7 days of real sessions: **3547 of 3598 bash calls allowed** (40 R1, 7 R2,
@@ -51,8 +61,10 @@ Measured over the last 7 days of real sessions: **3547 of 3598 bash calls allowe
   This complements the bg-do engine's own ban on `time.sleep` inside snippets.
 
 Not detected, by design: a sleeping script written in one call and executed in another, sleeps inside
-a package script or binary, non-`sleep` stalls (`read -t 300`, `timeout 300 tail -f`), and sleeps
-reached through a variable (`cmd = "sleep 300"; bg.run(cmd)` — string literals only, no dataflow).
+a package script or binary, stalls other than the two disguises above (`read -t` from a fifo or a
+terminal, `nc -w`, a `tail -f` without `timeout`), and sleeps reached through a variable
+(`cmd = "sleep 300"; bg.run(cmd)` — string literals only, no dataflow). The reverse gap: only
+`grep -m`, `grep -q` and `head` count as ending a `tail -f`, so `| sed '/ready/q'` needs the hatch.
 
 ## Escape hatch
 
