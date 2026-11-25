@@ -56,8 +56,9 @@ function resolveTimeoutS(params: Record<string, unknown>): number {
 	}
 	if (n > MAX_TIMEOUT_S) {
 		throw new Error(
-			`timeout_seconds=${n} exceeds the ${MAX_TIMEOUT_S}s cap. Do not wait that long inside one snippet: ` +
-				`start the job in this call, return the job id, and poll it (bg.wait_for/bg.output) in later bg_do calls.`,
+			`timeout_seconds=${n} exceeds the ${MAX_TIMEOUT_S}s cap. Block for at most ${MAX_TIMEOUT_S}s ` +
+				`(bg.wait(id, timeout=${MAX_TIMEOUT_S - 10}) with timeout_seconds=${MAX_TIMEOUT_S}) and block again in the next call ` +
+				`until the job ends; with other work to do meanwhile, bg.notify it instead.`,
 		);
 	}
 	return Math.max(1, n);
@@ -367,8 +368,9 @@ export default function bgDo(pi: ExtensionAPI) {
 		description: [
 			"LONG-RUNNING / non-terminating commands only (servers, watchers, `tail -f`, builds): xonsh",
 			"code-mode with an injected `bg` API. One-shot commands: use the `bash` tool.",
-			"To wait more than 2 minutes, do not block: `bg.notify(id)` (or `bg.notify(id, regex)`) and end your turn;",
-			"a message starts the next turn when the job exits or a line matches.",
+			"Waiting on a job: with other work to do meanwhile, `bg.notify(id)` (or `bg.notify(id, regex)`) and do it;",
+			"a message arrives when the job exits or a line matches, and starts a new turn if yours has ended.",
+			`With nothing else to do, block: \`bg.wait(id, timeout=…)\` or \`bg.wait_for(id, regex, timeout=…)\`; past ${MAX_TIMEOUT_S}s, block again in the next call.`,
 			...(API_BLOCK ? ["`bg` API:", API_BLOCK] : []),
 			`Full usage, pipes and examples, read first: ${USAGE_PATH}`,
 		].join("\n"),

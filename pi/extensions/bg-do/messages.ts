@@ -16,7 +16,7 @@ export interface ErrorInput {
 export function errorText({ code, err, cause, timeoutS }: ErrorInput): string {
 	if (err.trim() === ENGINE_INTERRUPT) {
 		if (cause === "user") return "Interrupted by the user, not a timeout. Background jobs are still running.";
-		return `Interrupted: snippet hit the ${timeoutS}s bg_do timeout. Background jobs are still running — poll them (bg.list/bg.output/bg.wait_for) in another call, and pass timeout_seconds to wait longer.`;
+		return `Interrupted: snippet hit the ${timeoutS}s bg_do timeout. Background jobs are still running — keep waiting on them in another call (bg.wait/bg.wait_for, timeout_seconds up to 600), or bg.notify them if you have other work.`;
 	}
 	if (err.includes("SyntaxError") && code.includes("$(") && /&&|\|\|/.test(code)) {
 		return `${err.trimEnd()}\n${SUBPROC_HINT}`;

@@ -63,7 +63,7 @@ test("notify on exit sends the id, command, exit code and last ten lines", { ski
 	withEngine(async (_engine, c) => {
 		const r = await c.run('j = bg.run("seq 1 25; exit 3"); bg.notify(j)');
 		assert.equal(r.err, null);
-		assert.match(r.out, /\[bg\] notify bg-1 on exit: end your turn/);
+		assert.match(r.out, /\[bg\] notify bg-1 on exit: continue with other work/);
 		const ev = await c.next(isNotify, "exit notify");
 		assert.deepEqual(ev, {
 			event: "notify",

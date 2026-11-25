@@ -50,15 +50,16 @@ bg.path(id) -> str                      # backing log file (stdout+stderr merged
 ```
 
 To wait, block on an *event*: `bg.wait_for(id, regex)` (until a matching line appears) or
-`bg.wait(id, timeout=...)` (until the job exits). For anything longer than 2 minutes, do not
-block at all: `bg.notify` the job and end your turn (next section).
+`bg.wait(id, timeout=...)` (until the job exits). Block only when you have nothing else to do;
+with other work to do meanwhile, `bg.notify` the job and do that work instead (next section).
 
-## Long waits: `bg.notify`, then end your turn
+## Waiting while you work: `bg.notify`
 `bg.notify(id)` registers a one-shot notification for when the job exits; `bg.notify(id, regex)`
 fires on the first output line that matches, or on exit if none does (lines already printed
 count, so a match that happened before the call fires at once). It prints a confirmation and
-returns at once. **End your turn after it.** When it fires, a message starts your next turn with
-the job id, its command, the exit code or the matched line, and the last ten lines of output:
+returns at once. **Then carry on with your other work.** When it fires, a message reaches you
+after your current tool calls, or starts a new turn if you have ended yours. It carries the job
+id, its command, the exit code or the matched line, and the last ten lines of output:
 ```python
 jid = bg.run("bazel test //... 2>&1")
 bg.notify(jid)                                  # message on exit
@@ -107,15 +108,16 @@ A snippet that exceeds its timeout is interrupted, but **the jobs keep running**
 them. A snippet the user interrupts says "Interrupted by the user, not a timeout": that is not a
 reason to shorten your waits, and its jobs keep running too.
 
-Prefer short calls: start the job in one call, then poll it in later calls
-(`bg.wait_for(id, rx, timeout=...)`, `bg.output(id)`) instead of blocking for many minutes in one,
-and `bg.notify` anything longer than 2 minutes.
+With nothing else to do, block on the job. A wait longer than the cap is several calls of
+`bg.wait(id, timeout=590)` with `timeout_seconds=600`, each one picking up where the last stopped.
+With other work to do meanwhile, `bg.notify` the job instead.
 
 ## Rules
 - Do **NOT** use the `subprocess` module, `Popen`, `os.system`, `os.fork`, or `multiprocessing`.
   Manage every process through the `bg` API.
 - To wait, block on an event: `bg.wait_for(id, regex)` for a readiness/error line, or
-  `bg.wait(id, timeout=...)` for completion. Over 2 minutes: `bg.notify(id)` and end your turn.
+  `bg.wait(id, timeout=...)` for completion. With other work to do meanwhile, `bg.notify(id)` and
+  do it instead.
 - Use `print(...)` for Python values; write bare pipelines for shell output.
 - For **streaming** pipes, force line-buffering so `wait_for`/`output` see lines promptly:
   `bg.run("tail -f app.log | grep --line-buffered -i error")` or wrap a tool with `stdbuf -oL`.

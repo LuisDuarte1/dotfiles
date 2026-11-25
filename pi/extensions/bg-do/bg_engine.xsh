@@ -174,7 +174,7 @@ class _BG:
         rx = None if regex is None else re.compile(regex)
         with _WATCH_LOCK: self._watches.append(_Watch(j, rx))
         on = 'exit' if rx is None else 'exit or a line matching %r' % rx.pattern
-        print('[bg] notify %s on %s: end your turn, the message will start the next one' % (jid, on))
+        print('[bg] notify %s on %s: continue with other work; a message arrives when it fires' % (jid, on))
 
 bg = _BG()
 
