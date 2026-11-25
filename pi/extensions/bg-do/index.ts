@@ -18,8 +18,10 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { decodeFrame, type NotifyEvent, notifyMessage, routeFrame, runningCounter } from "./frames.ts";
-import { JobStore } from "./jobs.ts";
+import { BgInspector } from "./inspector.ts";
+import { JobStore, killJob } from "./jobs.ts";
 import { apiBlock, errorText, type InterruptCause } from "./messages.ts";
+import { elapsed, notifyLabel, oneLine, statusLabel } from "./render.ts";
 import { NotifyWidget } from "./widget.ts";
 
 // Resolve sibling files relative to this module (works through the symlinked
@@ -432,21 +434,48 @@ export default function bgDo(pi: ExtensionAPI) {
 		},
 	});
 
-	// Human helper: list background jobs from the TUI (not an LLM tool).
-	// Runs a tiny snippet through the same engine.
+	let inspectorOpen = false;
+	const openInspector = async (ctx: ExtensionContext, initialId?: string) => {
+		if (inspectorOpen) return;
+		inspectorOpen = true;
+		try {
+			await ctx.ui.custom<void>(
+				(tui, theme, _keybindings, done) =>
+					new BgInspector({ tui, theme, store, initialId, kill: (job) => killJob(job), done: () => done() }),
+				{ overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" } },
+			);
+		} finally {
+			inspectorOpen = false;
+		}
+	};
+
+	// Both read the job table the engine pushes, never the snippet queue, so they still
+	// answer while the agent is blocked in a long bg.wait.
 	pi.registerCommand("bg", {
-		description: "List background jobs started by bg_do",
-		handler: async (_args, ctx) => {
-			try {
-				const { out, err } = await sendCode(
-					"import json as _j; print(_j.dumps(bg.list(), indent=2))",
-					10000,
-					ctx,
-				);
-				ctx.ui.notify(err ? `bg error: ${err}` : out.trim() || "No background jobs.", err ? "error" : "info");
-			} catch (e) {
-				ctx.ui.notify(e instanceof Error ? e.message : String(e), "error");
-			}
+		description: "Inspect background jobs started by bg_do (optionally jump to bg-N)",
+		getArgumentCompletions: (prefix) => {
+			const items = store
+				.all()
+				.filter((job) => job.id.startsWith(prefix.trim()))
+				.map((job) => ({ value: job.id, label: job.id, description: `[${statusLabel(job)}] ${oneLine(job.cmd, 60)}` }));
+			return items.length > 0 ? items : null;
+		},
+		handler: async (args, ctx) => {
+			const ref = args.trim();
+			const id = /^\d+$/.test(ref) ? `bg-${ref}` : ref;
+			if (ctx.mode === "tui") return openInspector(ctx, id || undefined);
+			const now = Date.now();
+			const lines = store.all().map((job) => {
+				const notify = job.notify.length > 0 ? ` · notify ${notifyLabel(job.notify)}` : "";
+				return `${job.id} [${statusLabel(job)}] ${elapsed(job, now)} ${oneLine(job.cmd, 120)}${notify}`;
+			});
+			ctx.ui.notify(lines.join("\n") || "No background jobs.", "info");
+		},
+	});
+	pi.registerShortcut("alt+p", {
+		description: "Inspect bg_do jobs",
+		handler: async (ctx) => {
+			if (ctx.mode === "tui") await openInspector(ctx);
 		},
 	});
 

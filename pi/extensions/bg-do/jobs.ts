@@ -33,6 +33,21 @@ export class JobStore {
 	}
 }
 
+type Kill = (pid: number, signal: NodeJS.Signals) => unknown;
+
+// Signals the job directly rather than through the snippet queue, so a kill still
+// lands while the agent sits in a long bg.wait; the engine then sees the exit.
+export function killJob(job: JobInfo, kill: Kill = process.kill): string | undefined {
+	if (!job.running) return `${job.id} is not running`;
+	if (!job.pid) return `${job.id} has no pid`;
+	try {
+		kill(job.group ? -job.pid : job.pid, "SIGTERM");
+		return undefined;
+	} catch (error) {
+		return (error as Error).message;
+	}
+}
+
 export function tailLines(path: string, maxBytes: number): string[] {
 	let fd: number | undefined;
 	try {

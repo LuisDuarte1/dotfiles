@@ -64,6 +64,6 @@ export function widgetLines(jobs: JobInfo[], tails: Map<string, string>, now: nu
 		const activity = tail ? theme.fg("dim", ` · ${oneLine(tail, 200)}`) : "";
 		return `${jobHeader(job, theme, now, notifyLabel(job.notify))}${activity}`;
 	});
-	if (lines.length > 0) lines.push(theme.fg("dim", "  /bg to list jobs"));
+	if (lines.length > 0) lines.push(theme.fg("dim", "  alt+p or /bg to inspect"));
 	return lines;
 }

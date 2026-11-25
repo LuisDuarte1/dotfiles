@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { JobStore, lastLine, tailLines } from "./jobs.ts";
+import { JobStore, killJob, lastLine, tailLines } from "./jobs.ts";
 import { job } from "./test/job.ts";
 
 test("the store lists running jobs in start order, then finished ones newest first", () => {
@@ -54,4 +54,22 @@ test("a log tail drops the cut first line, terminal noise and a missing file", (
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("a kill sends SIGTERM to the job's process group, or to its pid without setsid", () => {
+	const sent: [number, string][] = [];
+	const kill = (pid: number, signal: string) => sent.push([pid, signal]);
+	assert.equal(killJob(job({ pid: 321 }), kill), undefined);
+	assert.equal(killJob(job({ pid: 322, group: false }), kill), undefined);
+	assert.deepEqual(sent, [
+		[-321, "SIGTERM"],
+		[322, "SIGTERM"],
+	]);
+	assert.equal(killJob(job({ running: false, returncode: 0 }), kill), "bg-1 is not running");
+	assert.equal(killJob(job({ pid: null }), kill), "bg-1 has no pid");
+	const gone = () => {
+		throw new Error("kill ESRCH");
+	};
+	assert.equal(killJob(job(), gone), "kill ESRCH");
+	assert.equal(sent.length, 2);
 });

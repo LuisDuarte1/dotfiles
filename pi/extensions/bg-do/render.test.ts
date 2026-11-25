@@ -39,7 +39,7 @@ test("the widget shows one line per pending job, with what it waits for and its 
 	assert.deepEqual(widgetLines(jobs, tails, 1_012_000, theme), [
 		"⏳ bg-3 make [on exit] · 12s · INFO: 812 / 1,204 actions",
 		"⏳ bg-5 npm run dev [on /ready/] · 12s",
-		"  /bg to list jobs",
+		"  alt+p or /bg to inspect",
 	]);
 	assert.deepEqual(widgetLines([], tails, 0, theme), []);
 });
