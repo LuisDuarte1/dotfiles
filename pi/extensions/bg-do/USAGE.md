@@ -196,7 +196,8 @@ bgout @(jid) | grep -c PASS   # passing tests
 ```
 
 ## From the TUI
-`/bg` lists background jobs and their status.
+`/bg` lists background jobs and their status. While a `bg.notify` is pending, a line above the
+editor shows its job, what it waits for, how long the job has run and its last output line.
 
 ## For other extensions
 Whenever the number of running jobs changes, and on every reattach, the extension emits

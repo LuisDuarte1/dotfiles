@@ -23,6 +23,7 @@ class _Job:
     def __init__(self, jid, cmd, cwd=None):
         self.id = jid; self.cmd = cmd; self.done = False
         self.returncode = None; self._cursor = 0
+        self.started = time.time(); self.ended = None
         self._path = tempfile.mktemp(prefix='bgdo_', suffix='.log')
         open(self._path, 'w').close()
         full = cmd if cwd is None else 'cd ' + cwd + ' && ' + cmd
@@ -46,6 +47,7 @@ class _Job:
             if rc is not None or self.proc is None:
                 self.returncode = rc; break
             time.sleep(0.03)
+        self.ended = time.time()
         self.done = True
     def _all_lines(self):
         try:
@@ -286,6 +288,46 @@ def _send_running():
         except Exception:
             _CLIENT[0] = None
 
+_SENT_TABLE = [None]
+
+# The UI lists jobs and pending notifies; a long session keeps every job, so the
+# table is capped to recent ones, but a running job is never dropped from it.
+def _row(job, pend):
+    done = job.done
+    row = {'id': job.id, 'cmd': job.cmd[:200], 'pid': getattr(job.proc, 'pid', None), 'group': _HAVE_SETSID}
+    row['started'] = job.started
+    row['ended'] = job.ended if done else None
+    row['running'] = done is False
+    row['returncode'] = job.returncode if done else None
+    row['log'] = job._path
+    row['notify'] = pend.get(job.id, [])
+    return row
+
+def _table():
+    jobs = list(bg._jobs.values())
+    keep = []
+    for job in jobs[:-100]:
+        if job.done is False: keep.append(job)
+    keep.extend(jobs[-100:])
+    with _WATCH_LOCK: watches = list(bg._watches)
+    pend = {}
+    for w in watches:
+        pend.setdefault(w.job.id, []).append(None if w.rx is None else w.rx.pattern[:200])
+    return [_row(job, pend) for job in keep]
+
+def _table_key(rows):
+    return [(r['id'], r['running'], r['returncode'], tuple(r['notify'])) for r in rows]
+
+def _send_table():
+    rows = _table(); key = _table_key(rows)
+    with _WLOCK:
+        c = _CLIENT[0]
+        if c is None or key == _SENT_TABLE[0]: return
+        try:
+            c.sendall(_frame({'event': 'table', 'jobs': rows})); _SENT_TABLE[0] = key
+        except Exception:
+            _CLIENT[0] = None
+
 def _emit(evt):
     with _WLOCK:
         c = _CLIENT[0]
@@ -304,6 +346,8 @@ def _attach(conn):
                 conn.sendall(_frame(_QUEUE[0])); _QUEUE.pop(0)
             n = _running()
             conn.sendall(_frame({'event': 'jobs', 'running': n})); _SENT_RUNNING[0] = n
+            rows = _table()
+            conn.sendall(_frame({'event': 'table', 'jobs': rows})); _SENT_TABLE[0] = _table_key(rows)
         except Exception:
             return False
         _CLIENT[0] = conn
@@ -335,6 +379,8 @@ def _notifier():
             except Exception:
                 pass
         try: _send_running()
+        except Exception: pass
+        try: _send_table()
         except Exception: pass
 
 # Persistent server: survives client (extension) disconnects so jobs live across

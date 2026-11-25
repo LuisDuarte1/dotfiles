@@ -7,11 +7,25 @@ export interface NotifyEvent {
 	tail: string[];
 }
 
+export interface JobInfo {
+	id: string;
+	cmd: string;
+	pid: number | null;
+	group: boolean;
+	started: number;
+	ended: number | null;
+	running: boolean;
+	returncode: number | null;
+	log: string;
+	notify: (string | null)[];
+}
+
 export type Routed =
 	| { kind: "ready"; pid?: number }
 	| { kind: "reply"; out: string; err: string | null }
 	| { kind: "notify"; event: NotifyEvent }
 	| { kind: "jobs"; running: number }
+	| { kind: "table"; jobs: JobInfo[] }
 	| { kind: "ignore" };
 
 export function decodeFrame(line: string): unknown {
@@ -33,6 +47,9 @@ export function routeFrame(frame: unknown): Routed {
 			const n = f.running;
 			return Number.isInteger(n) && (n as number) >= 0 ? { kind: "jobs", running: n as number } : { kind: "ignore" };
 		}
+		if (f.event === "table") {
+			return Array.isArray(f.jobs) ? { kind: "table", jobs: f.jobs.flatMap(jobInfo) } : { kind: "ignore" };
+		}
 		if (f.event !== "notify") return { kind: "ignore" };
 		return {
 			kind: "notify",
@@ -53,6 +70,33 @@ function str(v: unknown): string | null {
 	return typeof v === "string" ? v : null;
 }
 
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+// A row without an id or a log cannot be shown or opened, so it is dropped; every
+// other field falls back to a value that renders as "unknown" rather than failing.
+function jobInfo(raw: unknown): JobInfo[] {
+	if (!raw || typeof raw !== "object") return [];
+	const r = raw as Record<string, unknown>;
+	const id = str(r.id);
+	const log = str(r.log);
+	if (!id || !log) return [];
+	const pid = num(r.pid);
+	return [
+		{
+			id,
+			cmd: str(r.cmd) ?? "",
+			pid: pid !== null && Number.isInteger(pid) && pid > 0 ? pid : null,
+			group: r.group === true,
+			started: num(r.started) ?? 0,
+			ended: num(r.ended),
+			running: r.running === true,
+			returncode: num(r.returncode),
+			log,
+			notify: Array.isArray(r.notify) ? r.notify.filter((p): p is string | null => p === null || typeof p === "string") : [],
+		},
+	];
+}
+
 // The engine re-sends its count on every attach, so the same number can arrive
 // twice; listeners are promised one call per change.
 export function runningCounter(emit: (n: number) => void): (n: number) => void {
@@ -66,7 +110,7 @@ export function runningCounter(emit: (n: number) => void): (n: number) => void {
 
 export const NOTIFY_LIMITS = { cmd: 200, line: 300, tailLines: 10, tailLine: 240 };
 
-function clean(s: string): string {
+export function clean(s: string): string {
 	const noAnsi = s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\r+$/, "");
 	return noAnsi.slice(noAnsi.lastIndexOf("\r") + 1);
 }

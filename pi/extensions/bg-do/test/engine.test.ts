@@ -136,6 +136,70 @@ test("an event fired while no client is attached is queued and flushed right aft
 	}));
 
 const isJobs = (f: Record<string, unknown>) => f.event === "jobs";
+const isTable = (f: Record<string, unknown>) => f.event === "table";
+type Row = Record<string, unknown>;
+const rows = (f: Record<string, unknown>) => f.jobs as Row[];
+
+test("the job table is sent on attach, lists each job, and tracks its pending notifies", { skip }, () =>
+	withEngine(async (engine, c) => {
+		assert.deepEqual(c.frames[2], { event: "table", jobs: [] });
+		await c.next(isTable, "table on attach");
+		const go = gate(engine);
+		const before = Date.now() / 1000;
+		await c.run(`j = bg.run("echo hi; ${waitGate(go)}; exit 4")`);
+		const started = rows(await c.next(isTable, "table with the job"))[0];
+		assert.equal(started.id, "bg-1");
+		assert.equal(started.running, true);
+		assert.equal(started.returncode, null);
+		assert.equal(started.ended, null);
+		assert.deepEqual(started.notify, []);
+		assert.ok((started.started as number) >= before - 1, String(started.started));
+		assert.ok(Number.isInteger(started.pid), String(started.pid));
+		assert.equal(typeof started.group, "boolean");
+		assert.equal(started.log, (await c.run("print(bg.path(j))")).out.split("\n")[0]);
+		await c.run('bg.notify(j); bg.notify(j, r"never")');
+		assert.deepEqual(rows(await c.next(isTable, "table with notifies"))[0].notify, [null, "never"]);
+		writeFileSync(go, "");
+		await c.next(isNotify, "exit notify");
+		const cleared = await c.next((f) => isTable(f) && (rows(f)[0].notify as unknown[]).length === 0, "table after exit");
+		const done = rows(cleared)[0];
+		assert.deepEqual([done.running, done.returncode], [false, 4]);
+		assert.ok((done.ended as number) >= (done.started as number));
+		assert.ok(c.frames.indexOf(cleared) > c.frames.findIndex(isNotify), "the notify is sent before the table drops it");
+		assert.equal(engine.stderr(), "", "the engine logged no errors");
+	}));
+
+test("a reattached client gets the current table, pending notifies included", { skip }, () =>
+	withEngine(async (engine, first) => {
+		const go = gate(engine);
+		await first.run(`j = bg.run("${waitGate(go)}"); bg.notify(j, "x")`);
+		await first.next((f) => isTable(f) && rows(f).length === 1 && (rows(f)[0].notify as unknown[]).length === 1, "notify row");
+		await first.close();
+		const second = await engine.connect();
+		try {
+			const table = await second.next(isTable, "table on reattach");
+			assert.deepEqual(
+				rows(table).map((r) => [r.id, r.running, r.notify]),
+				[["bg-1", true, ["x"]]],
+			);
+			writeFileSync(go, "");
+			await second.next((f) => isTable(f) && rows(f)[0].running === false, "exit after reattach");
+		} finally {
+			await second.close();
+		}
+	}));
+
+test("the table keeps the last 100 jobs and every older one still running", { skip }, () =>
+	withEngine(async (engine, c) => {
+		const go = gate(engine);
+		await c.run(`old = bg.run("${waitGate(go)}")\nfor _ in range(120): bg.wait(bg.run("true"))`, 60000);
+		const ids = await c.next((f) => isTable(f) && rows(f).at(-1)?.id === "bg-121" && rows(f).at(-1)?.running === false, "full table");
+		assert.deepEqual(
+			[rows(ids)[0].id, rows(ids)[1].id, rows(ids).at(-1)?.id],
+			["bg-1", "bg-22", "bg-121"],
+		);
+		writeFileSync(go, "");
+	}));
 const counts = (c: Client) => c.events("jobs").map((f) => f.running);
 
 test("the running-job count is sent on attach and on every change, once each", { skip }, () =>

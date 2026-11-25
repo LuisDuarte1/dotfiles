@@ -36,6 +36,41 @@ test("a running-job count is routed as a number, and a bad one is dropped", () =
 	}
 });
 
+test("a job table is routed row by row, and rows it cannot show are dropped", () => {
+	const row = {
+		id: "bg-2",
+		cmd: "make",
+		pid: 4242,
+		group: true,
+		started: 1700000000.5,
+		ended: null,
+		running: true,
+		returncode: null,
+		log: "/tmp/bgdo_x.log",
+		notify: [null, "ready"],
+	};
+	assert.deepEqual(routeFrame({ event: "table", jobs: [row] }), { kind: "table", jobs: [row] });
+	const odd = { id: "bg-3", log: "/tmp/l", pid: -1, started: "x", running: 1, returncode: 2, notify: ["a", 3, null] };
+	assert.deepEqual(routeFrame({ event: "table", jobs: [odd, { id: "bg-4" }, { log: "/tmp/l" }, null] }), {
+		kind: "table",
+		jobs: [
+			{
+				id: "bg-3",
+				cmd: "",
+				pid: null,
+				group: false,
+				started: 0,
+				ended: null,
+				running: false,
+				returncode: 2,
+				log: "/tmp/l",
+				notify: ["a", null],
+			},
+		],
+	});
+	assert.deepEqual(routeFrame({ event: "table", jobs: "nope", out: "x" }), { kind: "ignore" });
+});
+
 test("the running count reaches listeners once per change", () => {
 	const seen: number[] = [];
 	const set = runningCounter((n) => seen.push(n));

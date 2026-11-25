@@ -18,7 +18,9 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { decodeFrame, type NotifyEvent, notifyMessage, routeFrame, runningCounter } from "./frames.ts";
+import { JobStore } from "./jobs.ts";
 import { apiBlock, errorText, type InterruptCause } from "./messages.ts";
+import { NotifyWidget } from "./widget.ts";
 
 // Resolve sibling files relative to this module (works through the symlinked
 // extensions dir). The engine is run by xonsh; USAGE.md is referenced for agents.
@@ -76,6 +78,12 @@ export default function bgDo(pi: ExtensionAPI) {
 
 	const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 	const setRunning = runningCounter((n) => pi.events.emit(RUNNING_EVENT, n));
+	const store = new JobStore();
+	const widget = new NotifyWidget(store);
+	const engineGone = () => {
+		setRunning(0);
+		store.set([]);
+	};
 
 	function sessionKey(ctx: ExtensionContext): string {
 		let id = "default";
@@ -132,7 +140,7 @@ export default function bgDo(pi: ExtensionAPI) {
 		const p = pending;
 		pending = null;
 		if (p) p({ err: `bg_do connection dropped${orphanJobs()}` });
-		setRunning(0);
+		engineGone();
 	}
 
 	function deliverNotify(event: NotifyEvent) {
@@ -166,6 +174,8 @@ export default function bgDo(pi: ExtensionAPI) {
 						deliverNotify(routed.event);
 					} else if (routed.kind === "jobs") {
 						setRunning(routed.running);
+					} else if (routed.kind === "table") {
+						store.set(routed.jobs);
 					} else if (routed.kind === "reply") {
 						const p = pending;
 						pending = null;
@@ -181,7 +191,7 @@ export default function bgDo(pi: ExtensionAPI) {
 			if (conn === socket) {
 				conn = null;
 				ready = null;
-				if (live) setRunning(0);
+				if (live) engineGone();
 			}
 			const p = pending;
 			pending = null;
@@ -350,7 +360,7 @@ export default function bgDo(pi: ExtensionAPI) {
 		enginePid = undefined;
 		rxBuf = "";
 		pending = null;
-		setRunning(0);
+		engineGone();
 		try {
 			if (sockPath) unlinkSync(`${sockPath}.jobs`);
 		} catch {}
@@ -386,6 +396,7 @@ export default function bgDo(pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			widget.bind(ctx);
 			const timeoutMs = resolveTimeoutS(params as unknown as Record<string, unknown>) * 1000;
 			const { out, err, cause } = await sendCode(params.code, timeoutMs, ctx, signal);
 			if (err) {
@@ -442,6 +453,7 @@ export default function bgDo(pi: ExtensionAPI) {
 	// The engine kills its jobs after 30 idle minutes without a client, and a reload drops the client, so
 	// reattach at once instead of waiting for the next bg_do call; with no engine, stay lazy.
 	pi.on("session_start", (_event, ctx) => {
+		widget.bind(ctx);
 		if (existsSync(join(tmpdir(), `bgdo-${sessionKey(ctx)}.sock`))) start(ctx).catch(() => {});
 	});
 
@@ -449,5 +461,6 @@ export default function bgDo(pi: ExtensionAPI) {
 	// killpg leaves no orphaned background processes behind.
 	pi.on("session_shutdown", async (event) => {
 		await cleanup((event as { reason?: string })?.reason);
+		widget.dispose();
 	});
 }
