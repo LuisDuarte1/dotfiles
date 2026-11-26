@@ -2,7 +2,7 @@
 Description=Local Prometheus (scrapes node-exporter and process-exporter)
 
 [Service]
-ExecStart=%h/.nix-profile/bin/prometheus --config.file=%h/.config/prometheus/prometheus.yml --storage.tsdb.path=%h/.cache/prometheus --storage.tsdb.retention.time=30d --web.listen-address=127.0.0.1:9090
+ExecStart=%h/.nix-profile/bin/prometheus --config.file=%h/.config/prometheus/prometheus.yml --storage.tsdb.path=%h/.cache/prometheus --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=3GB --web.listen-address=127.0.0.1:9090
 Restart=on-failure
 # systemd-oomd kills a child of app.slice under memory pressure; the metrics stack must
 # outlive the very events it records.
