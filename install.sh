@@ -180,6 +180,10 @@ mkdir -p ~/.config/zed
 ln -sf "$(pwd)/zed/keymap.json" ~/.config/zed/keymap.json
 ln -sf "$(pwd)/zed/tasks.json" ~/.config/zed/tasks.json
 
+mkdir -p ~/.config/prometheus
+ln -sf "$(pwd)/prometheus/prometheus.yml" ~/.config/prometheus/prometheus.yml
+ln -sf "$(pwd)/prometheus/process-exporter.yml" ~/.config/prometheus/process-exporter.yml
+
 # Symlink bin scripts to ~/.local/bin
 mkdir -p ~/.local/bin
 ln -sf "$(pwd)/bin/dotfiles-sync" ~/.local/bin/dotfiles-sync
@@ -194,8 +198,16 @@ ln -sf "$(pwd)/bin/ci-wait" ~/.local/bin/ci-wait
 mkdir -p ~/.config/systemd/user
 ln -sf "$(pwd)/systemd/pi-update.service" ~/.config/systemd/user/pi-update.service
 ln -sf "$(pwd)/systemd/pi-update.timer" ~/.config/systemd/user/pi-update.timer
+metrics_units=(node-exporter.service process-exporter.service prometheus.service)
+for unit in "${metrics_units[@]}"; do
+  ln -sf "$(pwd)/systemd/$unit" ~/.config/systemd/user/$unit
+done
 systemctl --user daemon-reload
 systemctl --user enable --now pi-update.timer
+# Restart, not just start: the daemons read their config and binary only at startup, and
+# both may have changed since the last run.
+systemctl --user enable "${metrics_units[@]}"
+systemctl --user restart "${metrics_units[@]}"
 
 # systemd-oomd hardening: prevent oomd from killing init.scope / session
 # services when user@.service hits memory pressure. See

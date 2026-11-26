@@ -1,0 +1,11 @@
+# Bazel names each server bazel(<workspace basename>), which collides across worktrees and
+# nested workspaces, so its servers are grouped by full workspace path instead.
+process_names:
+  - name: "{{.Matches.ws}}"
+    comm: [java]
+    cmdline:
+      - '--workspace_directory=(?P<ws>\S+)'
+  # Grouping by name, not PID, stops short-lived processes from minting new series; '.+'
+  # skips kernel threads, whose command lines are empty.
+  - name: "{{.Comm}}"
+    cmdline: ['.+']

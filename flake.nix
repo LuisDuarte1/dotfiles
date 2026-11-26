@@ -45,6 +45,15 @@
         (pkgs.callPackage ./nix/pi-tldraw.nix { inherit piExtension; })
         (pkgs.callPackage ./nix/sleep-guard.nix { })
       ];
+
+      # Only the three daemons the systemd units run: the packages also ship helpers with
+      # generic names (node_exporter's `tools`, `load-generator`) that would land on PATH.
+      prometheus-local = pkgs.runCommand "prometheus-local" { } ''
+        mkdir -p $out/bin
+        ln -s ${pkgs.prometheus}/bin/prometheus $out/bin/
+        ln -s ${pkgs.prometheus-node-exporter}/bin/node_exporter $out/bin/
+        ln -s ${pkgs.prometheus-process-exporter}/bin/process-exporter $out/bin/
+      '';
     in
     {
       homeConfigurations.lduarte = home-manager.lib.homeManagerConfiguration {
@@ -81,6 +90,7 @@
             kubernetes-helm
             pi-coding-agent
             chrome-devtools-mcp
+            prometheus-local
             hunk.packages.${system}.default
           ] ++ pi-extensions;
         };

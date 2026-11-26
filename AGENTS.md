@@ -25,6 +25,7 @@ hypr/                    # Hyprland config + agent-layout (pi terminal restore)
 i3/config                # i3 window manager config
 nix/                     # Nix packaging for pi, pi extensions and patches
 pi/                      # pi agent config, extensions, agents, prompts
+prometheus/              # Local Prometheus + process-exporter configs (units in systemd/)
 zed/                     # Zed editor settings, keymap, tasks
 flake.nix                # Nix flake for system packages
 install.sh               # Bootstrap script (packages + symlinks)
