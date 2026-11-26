@@ -198,16 +198,35 @@ ln -sf "$(pwd)/bin/ci-wait" ~/.local/bin/ci-wait
 mkdir -p ~/.config/systemd/user
 ln -sf "$(pwd)/systemd/pi-update.service" ~/.config/systemd/user/pi-update.service
 ln -sf "$(pwd)/systemd/pi-update.timer" ~/.config/systemd/user/pi-update.timer
-metrics_units=(node-exporter.service process-exporter.service prometheus.service)
-for unit in "${metrics_units[@]}"; do
-  ln -sf "$(pwd)/systemd/$unit" ~/.config/systemd/user/$unit
-done
 systemctl --user daemon-reload
 systemctl --user enable --now pi-update.timer
-# Restart, not just start: the daemons read their config and binary only at startup, and
-# both may have changed since the last run.
-systemctl --user enable "${metrics_units[@]}"
-systemctl --user restart "${metrics_units[@]}"
+
+# Only the system manager can exempt the metrics daemons from the kernel OOM killer; the stamp
+# restarts them (one sudo prompt) only when a unit, a config or a binary has changed.
+metrics_units=(node-exporter process-exporter prometheus)
+metrics_instances=("${metrics_units[@]/%/@$USER.service}")
+metrics_stamp_file=~/.cache/dotfiles/metrics-units.stamp
+metrics_stamp=$({ cat systemd/system/*@.service prometheus/*.yml
+  readlink -f ~/.nix-profile/bin/{prometheus,node_exporter,process-exporter}; } | sha256sum)
+metrics_changed=0
+[ "$metrics_stamp" = "$(cat "$metrics_stamp_file" 2>/dev/null)" ] || metrics_changed=1
+for unit in "${metrics_units[@]}"; do
+  cmp -s "$(pwd)/systemd/system/$unit@.service" "/etc/systemd/system/$unit@.service" || metrics_changed=1
+done
+if [ "$metrics_changed" -eq 1 ]; then
+  info "Installing and restarting the metrics system units (requires sudo)..."
+  for unit in "${metrics_units[@]}"; do
+    sudo install -Dm644 "$(pwd)/systemd/system/$unit@.service" "/etc/systemd/system/$unit@.service"
+  done
+  sudo systemctl daemon-reload
+  sudo systemctl enable "${metrics_instances[@]}"
+  sudo systemctl restart "${metrics_instances[@]}"
+  mkdir -p ~/.cache/dotfiles
+  echo "$metrics_stamp" > "$metrics_stamp_file"
+  success "Metrics system units running: ${metrics_instances[*]}"
+else
+  info "Metrics system units already up to date"
+fi
 
 # systemd-oomd hardening: prevent oomd from killing init.scope / session
 # services when user@.service hits memory pressure. See

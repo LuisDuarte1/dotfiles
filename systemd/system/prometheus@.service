@@ -1,0 +1,17 @@
+[Unit]
+Description=Local Prometheus for %i (scrapes node-exporter and process-exporter)
+
+[Service]
+# User= also sets ${HOME} for ExecStart; env runs the binary because the executable itself
+# cannot hold variables, which keeps the template free of any user's home path.
+User=%i
+ExecStart=/usr/bin/env ${HOME}/.nix-profile/bin/prometheus --config.file=${HOME}/.config/prometheus/prometheus.yml --storage.tsdb.path=${HOME}/.cache/prometheus --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=3GB --web.listen-address=127.0.0.1:9090
+Restart=on-failure
+# Last in line for the kernel OOM killer and skipped by systemd-oomd, so it records the crunches
+# it would otherwise die in; not -1000, so MemoryMax can still kill a runaway and restart it.
+OOMScoreAdjust=-999
+ManagedOOMPreference=omit
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
