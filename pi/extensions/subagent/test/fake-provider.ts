@@ -119,8 +119,9 @@ export default function (pi: ExtensionAPI) {
 				const override = /MODEL=(\S+)/.exec(prompt)?.[1];
 				const name = /NAME=(\S+)/.exec(prompt)?.[1];
 				const context = prompt.includes("BIG") ? "x".repeat(200_000) : undefined;
-				const subtask = prompt.replace(/^delegate\s*/, "").replace(/\s*NAME=\S+\s*/, " ").trim();
-				const base = { ...(agent === "-" ? {} : { agent }), ...(name ? { name } : {}) };
+				const via = /VIA=(\w+):(\S+)/.exec(prompt);
+				const subtask = prompt.replace(/^delegate\s*/, "").replace(/\s*(NAME|VIA)=\S+\s*/g, " ").trim();
+				const base = { ...(agent === "-" ? {} : { agent }), ...(name ? { name } : {}), ...(via ? { [via[1]]: JSON.parse(via[2]) } : {}) };
 				if (prompt.includes("PARALLEL")) {
 					return reply(m, [
 						call("subagent", { ...base, task: `SLEEP3 left ${subtask}` }),

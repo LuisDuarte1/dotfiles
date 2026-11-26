@@ -16,7 +16,7 @@ export interface Sandbox {
 
 // A throwaway PI_CODING_AGENT_DIR so parent and child load only the fake provider
 // and this extension, and never touch the real config, sessions or models.
-export function makeSandbox(options: { autoRetry?: boolean } = {}): Sandbox {
+export function makeSandbox(options: { autoRetry?: boolean; transports?: boolean } = {}): Sandbox {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-e2e-"));
 	const agentDir = path.join(root, "agent");
 	const cwd = path.join(root, "work");
@@ -25,6 +25,7 @@ export function makeSandbox(options: { autoRetry?: boolean } = {}): Sandbox {
 	fs.mkdirSync(cwd);
 	fs.symlinkSync(extensionDir, path.join(agentDir, "extensions", "subagent"));
 	fs.symlinkSync(path.join(here, "fake-provider.ts"), path.join(agentDir, "extensions", "fake-provider.ts"));
+	if (options.transports) fs.symlinkSync(path.join(here, "fake-transport.ts"), path.join(agentDir, "extensions", "fake-transport.ts"));
 	if (options.autoRetry) {
 		fs.symlinkSync(path.resolve(extensionDir, "..", "auto-retry"), path.join(agentDir, "extensions", "auto-retry"));
 		fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false } }));

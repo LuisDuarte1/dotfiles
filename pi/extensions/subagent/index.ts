@@ -37,7 +37,7 @@ import {
 	shortModel,
 } from "./run.ts";
 import { runChild } from "./runner.ts";
-import { findThread, NAME_PATTERN, type ThreadDetails, threadFooter } from "./threads.ts";
+import { findThread, NAME_PATTERN, type ThreadDetails, threadFooter, type TransportRef } from "./threads.ts";
 import { collectTransports, type SubagentTransport } from "./transport.ts";
 import { SubagentWidget } from "./widget.ts";
 
@@ -63,11 +63,18 @@ interface SubagentDetails {
 	sessionFile?: string;
 	steers?: string[];
 	thread?: ThreadDetails;
+	transport?: TransportRef;
 }
 
-function detailsFor(run: RunState, agentSource: AgentConfig["source"] | undefined, thread?: ThreadDetails): SubagentDetails {
+function detailsFor(
+	run: RunState,
+	agentSource: AgentConfig["source"] | undefined,
+	thread?: ThreadDetails,
+	transport?: TransportRef,
+): SubagentDetails {
 	return {
 		thread,
+		transport,
 		runId: run.id,
 		agent: run.agent,
 		agentSource,
@@ -205,13 +212,23 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 
 		async execute(toolCallId, rawParams, signal, onUpdate, ctx): Promise<AgentToolResult<SubagentDetails>> {
 			const params = rawParams as SubagentParams;
-			const transport = transports.find((t) => params[t.param] !== undefined);
-			const transportValue = transport ? params[transport.param] : undefined;
+			const explicit = transports.find((t) => params[t.param] !== undefined);
 			const name = params.name?.trim();
 			const prior = name === undefined ? undefined : findThread(ctx.sessionManager.getBranch(), name);
+			let transport = explicit;
 			if (name !== undefined) {
 				if (!NAME_PATTERN.test(name)) throw new Error(`Invalid subagent name "${name}": use 1-64 letters, digits, ".", "_" or "-".`);
-				if (transport) throw new Error(`\`name\` cannot be combined with \`${transport.param}\` yet.`);
+				if (prior) {
+					const was = prior.transport;
+					const continued = was ? transports.find((t) => t.param === was.param) : undefined;
+					if (was && !continued) throw new Error(`Subagent "${name}" ran with \`${was.param}\`, which this session does not offer; use another name.`);
+					if (explicit && explicit !== continued) {
+						const where = continued ? `with \`${continued.param}\`` : "locally";
+						throw new Error(`Subagent "${name}" runs ${where}; omit \`${explicit.param}\` to continue it, or use another name.`);
+					}
+					transport = continued;
+				}
+				if (transport && !transport.resolve) throw new Error(`\`name\` cannot be combined with \`${transport.param}\` yet.`);
 				if (registry.liveNamed(name)) {
 					throw new Error(`Subagent "${name}" is still running; wait for its result before sending it more, or use another name.`);
 				}
@@ -249,6 +266,13 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 				config: loadConfig(CONFIG_FILE),
 			});
 
+			const priorFile = prior && fs.existsSync(prior.sessionFile) ? path.resolve(prior.sessionFile) : undefined;
+			const priorRun = prior?.transport ? { value: prior.transport.value, continues: priorFile !== undefined } : undefined;
+			const transportValue = transport?.resolve
+				? transport.resolve(params[transport.param], { cwd: ctx.cwd, prior: priorRun })
+				: transport && params[transport.param];
+			const transportRef = transport ? { param: transport.param, value: transportValue } : undefined;
+
 			// Nothing above may await: the liveNamed check and this create must be atomic, or two
 			// parallel calls with one name would both resume the same session file.
 			widget.bind(ctx);
@@ -262,7 +286,6 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 			});
 
 			const sessionDir = path.resolve(SESSIONS_ROOT, ctx.sessionManager.getSessionId());
-			const priorFile = prior && fs.existsSync(prior.sessionFile) ? path.resolve(prior.sessionFile) : undefined;
 			const thread: ThreadDetails | undefined =
 				name === undefined ? undefined : { name, agent: agent?.name, prompt: prior && priorFile ? prior.prompts + 1 : 1 };
 
@@ -273,7 +296,7 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 				lastProgress = now;
 				onUpdate?.({
 					content: [{ type: "text", text: lastText(run.lastAssistant) || "(running...)" }],
-					details: detailsFor(run, agent?.source, thread),
+					details: detailsFor(run, agent?.source, thread, transportRef),
 				});
 			};
 			const ticker = setInterval(() => progress(true), 1000);
@@ -329,10 +352,14 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 				if (tmp) await fs.promises.rm(tmp.dir, { recursive: true, force: true }).catch(() => {});
 			}
 
-			const footer = thread ? `\n\n${threadFooter(thread, prior !== undefined && !priorFile)}` : "";
+			const footers = [
+				thread ? threadFooter(thread, prior !== undefined && !priorFile) : undefined,
+				transport?.describe ? `[${transport.param} · ${transport.describe(transportValue)}]` : undefined,
+			].filter((line) => line !== undefined);
+			const footer = footers.length > 0 ? `\n\n${footers.join("\n")}` : "";
 			return {
 				content: [{ type: "text", text: resultText(run) + footer }],
-				details: detailsFor(run, agent?.source, thread),
+				details: detailsFor(run, agent?.source, thread, transportRef),
 				usage: run.usage,
 			};
 		},

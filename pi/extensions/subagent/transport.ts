@@ -12,12 +12,21 @@ export interface ChildSpec {
 	systemPrompt?: string;
 }
 
+export interface TransportContext {
+	cwd: string;
+	prior?: { value: unknown; continues: boolean };
+}
+
 export interface SubagentTransport {
 	param: string;
 	schema: TSchema;
 	label(value: unknown, agent: string | undefined): string;
 	createChild(options: RpcChildOptions, value: unknown, spec: ChildSpec): RpcChannel;
 	durable?: boolean;
+	// Fills defaults, and on a named follow-up derives the next run from `prior` (`value` may then be
+	// absent); without it `name` cannot use this transport. Synchronous: the call reserves the name after it.
+	resolve?(value: unknown, context: TransportContext): unknown;
+	describe?(value: unknown): string;
 }
 
 export interface TransportRegistry {

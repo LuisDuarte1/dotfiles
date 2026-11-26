@@ -9,11 +9,17 @@ export interface ThreadDetails {
 	after?: string;
 }
 
+export interface TransportRef {
+	param: string;
+	value: unknown;
+}
+
 export interface ThreadRef {
 	sessionFile: string;
 	agent?: string;
 	model?: string;
 	prompts: number;
+	transport?: TransportRef;
 }
 
 type BranchEntry = ReturnType<ExtensionContext["sessionManager"]["getBranch"]>[number];
@@ -24,9 +30,17 @@ export function findThread(branch: readonly BranchEntry[], name: string): Thread
 	let found: ThreadRef | undefined;
 	for (const entry of branch) {
 		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "subagent") continue;
-		const details = entry.message.details as { thread?: ThreadDetails; sessionFile?: string; model?: string } | undefined;
+		const details = entry.message.details as
+			| { thread?: ThreadDetails; sessionFile?: string; model?: string; transport?: TransportRef }
+			| undefined;
 		if (details?.thread?.name !== name || !details.sessionFile) continue;
-		found = { sessionFile: details.sessionFile, agent: details.thread.agent, model: details.model, prompts: details.thread.prompt };
+		found = {
+			sessionFile: details.sessionFile,
+			agent: details.thread.agent,
+			model: details.model,
+			prompts: details.thread.prompt,
+			transport: details.transport,
+		};
 	}
 	return found;
 }
