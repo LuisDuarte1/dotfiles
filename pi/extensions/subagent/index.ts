@@ -37,6 +37,7 @@ import {
 	shortModel,
 } from "./run.ts";
 import { runChild } from "./runner.ts";
+import { Slots } from "./slots.ts";
 import { findThread, NAME_PATTERN, type ThreadDetails, threadFooter, type TransportRef } from "./threads.ts";
 import { collectTransports, type SubagentTransport } from "./transport.ts";
 import { SubagentWidget } from "./widget.ts";
@@ -46,6 +47,10 @@ const CONFIG_FILE = path.join(getAgentDir(), "subagent.json");
 const SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const PROGRESS_INTERVAL_MS = 250;
 const LIVE_TRANSCRIPT_LINES = 30;
+// Each local subagent is a whole pi process plus its MCP servers: an unbounded fan-out of 146
+// exhausted RAM and swap and froze the machine. Remote ones cost nothing here, so only local queue.
+const MAX_LOCAL_RUNS = 30;
+const localSlots = new Slots(MAX_LOCAL_RUNS);
 
 interface SubagentDetails {
 	runId?: number;
@@ -206,6 +211,7 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 			"The subagent cannot see this session's history, so pass any relevant facts, paths, or prior findings via `context`.",
 			"Pass `name` to keep a subagent for follow-ups: a later call with the same name resumes it with everything it already saw and found.",
 			"Names belong to this session; a named subagent runs one task at a time.",
+			`At most ${MAX_LOCAL_RUNS} local subagents run at once; further calls wait for a free slot.`,
 		].join(" "),
 		promptSnippet: "Spawn an isolated subagent for a focused subtask; returns only its final text.",
 		parameters: subagentParameters(transports),
@@ -309,6 +315,7 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 			if (agent?.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 			let tmp: { dir: string; filePath: string } | undefined;
+			let release: (() => void) | undefined;
 			try {
 				if (thread && priorFile) thread.after = await readLastEntryId(priorFile);
 				if (!priorFile) {
@@ -327,6 +334,17 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 				const prompt = params.context
 					? `Context from parent agent:\n${params.context}\n\nTask:\n${params.task}`
 					: params.task;
+				if (!transport) {
+					if (localSlots.full) {
+						run.activity = `queued behind ${MAX_LOCAL_RUNS} running subagents`;
+						registry.changed();
+					}
+					release = await localSlots.acquire(signal).catch((error) => {
+						run.status = "aborted";
+						throw error;
+					});
+					run.activity = "starting";
+				}
 				const invocation = getPiInvocation(args);
 				const spec = { model: subagentModel, thinking: agent?.thinking, tools: agent?.tools, systemPrompt: agent?.systemPrompt };
 				await runChild({
@@ -346,6 +364,7 @@ function createSubagentTool(registry: RunRegistry, widget: SubagentWidget, trans
 					forwardDialog: ctx.hasUI ? (request) => forwardDialog(ctx, run, request, signal) : undefined,
 				});
 			} finally {
+				release?.();
 				clearInterval(ticker);
 				if (run.status === "running") run.status = "error"; // a throw must not leave the name busy
 				registry.finish(run);
