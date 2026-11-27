@@ -76,7 +76,9 @@ export class RpcChild implements RpcChannel {
 
 	constructor(options: RpcChildOptions) {
 		this.options = options;
-		this.proc = spawn(options.command, options.args, { cwd: options.cwd, shell: false, stdio: "pipe" });
+		// Opts this child into reload-broadcast, which is safe only because the runner reads the aborted settle
+		// before a reload as a pause. Remote children never see the local trigger file, so they need nothing.
+		this.proc = spawn(options.command, options.args, { cwd: options.cwd, env: { ...process.env, PI_RELOAD_BROADCAST: "1" }, shell: false, stdio: "pipe" });
 		const splitter = createLineSplitter((line) => this.handleLine(line));
 		this.proc.stdout.setEncoding("utf-8");
 		this.proc.stderr.setEncoding("utf-8");

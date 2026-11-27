@@ -16,7 +16,7 @@ export interface Sandbox {
 
 // A throwaway PI_CODING_AGENT_DIR so parent and child load only the fake provider
 // and this extension, and never touch the real config, sessions or models.
-export function makeSandbox(options: { autoRetry?: boolean; transports?: boolean } = {}): Sandbox {
+export function makeSandbox(options: { autoRetry?: boolean; transports?: boolean; reloadBroadcast?: boolean } = {}): Sandbox {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-e2e-"));
 	const agentDir = path.join(root, "agent");
 	const cwd = path.join(root, "work");
@@ -26,6 +26,9 @@ export function makeSandbox(options: { autoRetry?: boolean; transports?: boolean
 	fs.symlinkSync(extensionDir, path.join(agentDir, "extensions", "subagent"));
 	fs.symlinkSync(path.join(here, "fake-provider.ts"), path.join(agentDir, "extensions", "fake-provider.ts"));
 	if (options.transports) fs.symlinkSync(path.join(here, "fake-transport.ts"), path.join(agentDir, "extensions", "fake-transport.ts"));
+	if (options.reloadBroadcast) {
+		fs.symlinkSync(path.resolve(extensionDir, "..", "reload-broadcast"), path.join(agentDir, "extensions", "reload-broadcast"));
+	}
 	if (options.autoRetry) {
 		fs.symlinkSync(path.resolve(extensionDir, "..", "auto-retry"), path.join(agentDir, "extensions", "auto-retry"));
 		fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false } }));
@@ -34,8 +37,9 @@ export function makeSandbox(options: { autoRetry?: boolean; transports?: boolean
 		path.join(agentDir, "agents", "tester.md"),
 		"---\ndescription: Test agent\nmodel: fake/child\n---\nYou are a test agent.\n",
 	);
-	const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1" };
+	const env: NodeJS.ProcessEnv = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", XDG_RUNTIME_DIR: root };
 	delete env.PI_CODING_AGENT;
+	delete env.PI_RELOAD_BROADCAST;
 	return { agentDir, cwd, env, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 

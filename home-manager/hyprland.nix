@@ -37,6 +37,34 @@ let
     export PATH=${lib.makeBinPath [ hyprlandPackage pkgs.libnotify pkgs.rofi ]}:$PATH:/usr/bin
     exec ${pkgs.nodejs}/bin/node ${dotfilesDir}/hypr/agent-layout/main.ts "$@"
   '';
+  # A rename is one inotify event; `>` truncates and writes as two, and a fast reload fits between them.
+  # A beacon counts only while its pid still has the recorded start time: dead pis leave beacons behind.
+  piReloadAll = pkgs.writeShellApplication {
+    name = "pi-reload-all";
+    runtimeInputs = [ pkgs.coreutils pkgs.jq pkgs.libnotify ];
+    text = ''
+      runtime="''${XDG_RUNTIME_DIR:-}"
+      if [[ -n "$runtime" ]]; then
+        dir="$runtime/pi-reload" beacons="$runtime/pi-beacons"
+      else
+        dir="''${TMPDIR:-/tmp}/pi-reload-$(id -u)" beacons="''${TMPDIR:-/tmp}/pi-beacons-$(id -u)"
+      fi
+      install -d -m 700 "$dir"
+      tmp=$(mktemp "$dir/.request.XXXXXX")
+      date +%s%N > "$tmp"
+      mv -f "$tmp" "$dir/request"
+
+      live=0
+      for beacon in "$beacons"/*.json; do
+        [[ -e "$beacon" ]] || continue
+        read -r pid start < <(jq -r '"\(.pid) \(.startTime)"' "$beacon" 2>/dev/null) || continue
+        stat=$(cat "/proc/$pid/stat" 2>/dev/null) || continue
+        read -ra fields <<< "''${stat##*) }"
+        if [[ "''${fields[19]:-}" == "$start" ]]; then live=$((live + 1)); fi
+      done
+      notify-send -a pi "Reloading pi" "Sent to $live open pi session(s). Busy ones reload after their current tool turn and continue."
+    '';
+  };
   portalsConf = pkgs.writeText "hyprland-portals.conf" ''
     [preferred]
     default=hyprland;gtk
@@ -62,6 +90,7 @@ in
       agentLayout
       chromePackage
       hyprlandPackage
+      piReloadAll
     ] ++ (with pkgs; [
       grim
       # Ubuntu's kitty 0.32 sends Enter/Tab/Backspace twice to kitty-keyboard-protocol apps
@@ -234,6 +263,17 @@ in
     Comment=Pick which stored snapshot of pi agent terminals to reopen
     Exec=${agentLayout}/bin/agent-layout restore --pick
     Icon=view-restore
+    Terminal=false
+    Categories=Utility;
+  '';
+
+  xdg.dataFile."applications/pi-reload-all.desktop".text = ''
+    [Desktop Entry]
+    Type=Application
+    Name=Reload pi Sessions
+    Comment=Run /reload in every open pi; busy sessions and local subagents reload after their current tool turn and continue
+    Exec=${piReloadAll}/bin/pi-reload-all
+    Icon=view-refresh
     Terminal=false
     Categories=Utility;
   '';

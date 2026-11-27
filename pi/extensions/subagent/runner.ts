@@ -7,6 +7,9 @@ import { addNote, applyEvent, oneLine, type RunState } from "./run.ts";
 const STDERR_LIMIT = 20_000;
 const SHUTDOWN_GRACE_MS = 5_000;
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
+// reload-broadcast sets this status before aborting a child to reload it and clears it as the run
+// continues, so an agent_settled while it is set is a pause, not the end of the run.
+const RELOAD_STATUS_KEY = "reload-broadcast";
 
 export interface RunChildOptions {
 	run: RunState;
@@ -46,8 +49,13 @@ export async function runChild(options: RunChildOptions): Promise<void> {
 		markSettled = resolve;
 	});
 
+	let reloading = false;
 	const handleUi = (request: RpcExtensionUIRequest, respond: (body: UiResponseBody) => void) => {
-		if (request.method === "notify") {
+		if (request.method === "setStatus" && request.statusKey === RELOAD_STATUS_KEY) {
+			reloading = request.statusText !== undefined;
+			if (reloading) addNote(run, "info", "reloading pi; the run continues after it");
+			onChange();
+		} else if (request.method === "notify") {
 			addNote(run, request.notifyType ?? "info", request.message);
 			onChange();
 		} else if (DIALOG_METHODS.has(request.method)) {
@@ -94,7 +102,7 @@ export async function runChild(options: RunChildOptions): Promise<void> {
 		cwd: options.cwd,
 		onEvent: (event) => {
 			applyEvent(run, event);
-			if (event.type === "agent_settled") {
+			if (event.type === "agent_settled" && !reloading) {
 				sawSettled = true;
 				closing = true;
 				options.onControls?.(undefined);

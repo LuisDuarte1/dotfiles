@@ -190,6 +190,31 @@ agent-layout restore --snapshot ~/.local/state/agent-layout/snapshots/<file>.jso
 The log is `~/.local/state/agent-layout/restore.log`. Keep hands off the mouse
 while it runs; it briefly focuses each restored workspace.
 
+## Reload pi sessions
+
+Press Super+D and choose **Reload pi Sessions** (or run `pi-reload-all`) to run
+`/reload` in every open pi on this machine.
+
+- An idle session reloads at once and keeps its editor draft.
+- A session in the middle of a run reloads after its current tool turn. pi
+  cancels the next model call, reloads, and continues the run with a
+  `reload-broadcast` message.
+- Local subagents do the same, and their parent's `subagent` call keeps
+  waiting. Remote subagents are left alone.
+
+How it works:
+
+- `pi-reload-all` renames a new file onto `$XDG_RUNTIME_DIR/pi-reload/request`.
+  It then reports how many live session beacons it found.
+- `pi/extensions/reload-broadcast` watches that file. It runs in interactive
+  pi, and in RPC mode only when `PI_RELOAD_BROADCAST=1`, which the subagent
+  sets for its local children.
+- A subagent child sets the `reload-broadcast` status before it aborts. The
+  subagent runner then treats the next `agent_settled` as a pause, not the end
+  of the run.
+- A pi started before the extension existed needs one manual `/reload` first.
+  `/reload` does not swap the pi binary; a pi update still needs a restart.
+
 ## Keyboard validation
 
 The Wayland keymap keeps Portuguese `pt` and translates the Xmodmap override for
