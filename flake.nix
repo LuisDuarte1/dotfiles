@@ -35,6 +35,8 @@
 
       chrome-devtools-mcp = pkgs.callPackage ./nix/chrome-devtools-mcp.nix { };
 
+      prometheus-mcp-server = pkgs.callPackage ./nix/prometheus-mcp-server.nix { };
+
       # Factory for npm-published pi extensions. Each per-extension nix file
       # is a thin wrapper that calls this factory with pname/hashes/lockfile.
       piExtension = pkgs.callPackage ./nix/pi-extension.nix { };
@@ -90,6 +92,7 @@
             kubernetes-helm
             pi-coding-agent
             chrome-devtools-mcp
+            prometheus-mcp-server
             prometheus-local
             hunk.packages.${system}.default
           ] ++ pi-extensions;
