@@ -203,8 +203,12 @@ hl.window_rule({
 
 local screenshotCommand = [[area=$(slurp) || exit; dir="$HOME/Pictures/Screenshots"; mkdir -p "$dir"; file="$dir/$(date +%Y-%m-%d_%H-%M-%S).png"; grim -g "$area" "$file"; wl-copy < "$file"]]
 
+-- Apps started from the compositor would land in its session scope, outside user@.service, where
+-- agent.slice's lower CPU weight cannot favor them; app.slice is agent.slice's sibling.
+local appLauncher = [[rofi -show drun -run-command 'systemd-run --user --scope --slice=app.slice --collect -q -- {cmd}']]
+
 bindGlobal(mod .. " + Return", hl.dsp.exec_cmd("kitty"))
-bindGlobal(mod .. " + D", hl.dsp.exec_cmd("rofi -show drun"))
+bindGlobal(mod .. " + D", hl.dsp.exec_cmd(appLauncher))
 bindGlobal("Print", hl.dsp.exec_cmd(screenshotCommand))
 bindGlobal(mod .. " + F", hl.dsp.window.fullscreen())
 bindGlobal(mod .. " + SHIFT + space", hl.dsp.window.float({ action = "toggle" }))
