@@ -16,6 +16,17 @@ Commits MUST be atomic, and commit messages MUST concisely explain why the chang
 
 When you fix your own work (review feedback, lint, a forgotten file), amend or `--fixup` it into the commit that introduced it; never stack "address feedback" commits.
 
+## MR descriptions
+
+Write only what a reviewer needs to approve, deploy or roll back the change and cannot read from the diff or the commits. Cut everything else.
+
+- Open with what changes and why.
+- Then, only where they apply: deploy order and rollback, evidence, open problems, what is left out. One sentence per item.
+- Evidence states the result, with a number only where it decides something. Link runs; do not paste them.
+- NEVER repeat commit messages or explain how the code works.
+- With gstuff, set the text with `gstuff describe` and leave out `<!-- gstuff:commits -->`, or every commit body is appended.
+- Do not move what was cut into an MR comment.
+
 ## Comment Block Length
 
 Any comment block you write in code MUST be exactly 2 lines long. No more, no less.
