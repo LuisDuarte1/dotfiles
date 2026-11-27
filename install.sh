@@ -235,6 +235,7 @@ oomd_files=(
   "systemd/oomd/system/user@.service.d/99-oomd-override.conf:/etc/systemd/system/user@.service.d/99-oomd-override.conf"
   "systemd/oomd/user/app.slice.d/10-oomd.conf:/etc/systemd/user/app.slice.d/10-oomd.conf"
   "systemd/oomd/user/session.slice.d/10-oomd.conf:/etc/systemd/user/session.slice.d/10-oomd.conf"
+  "systemd/oomd/user/kitty-.scope.d/10-oomd.conf:/etc/systemd/user/kitty-.scope.d/10-oomd.conf"
 )
 oomd_changed=0
 for pair in "${oomd_files[@]}"; do
