@@ -261,4 +261,15 @@ else
   info "systemd-oomd drop-ins already up to date"
 fi
 
+power_key_src="$(pwd)/systemd/logind/10-power-key.conf"
+power_key_dest=/etc/systemd/logind.conf.d/10-power-key.conf
+if ! cmp -s "$power_key_src" "$power_key_dest"; then
+  info "Installing logind power-key drop-in (requires sudo)..."
+  sudo install -Dm644 "$power_key_src" "$power_key_dest"
+  sudo systemctl reload systemd-logind
+  success "logind power-key drop-in installed"
+else
+  info "logind power-key drop-in already up to date"
+fi
+
 success "Dotfiles installed"
