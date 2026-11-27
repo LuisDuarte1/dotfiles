@@ -14,11 +14,11 @@
 # `pi-update` (or do it manually) when bumping `version`.
 { lib, buildNpmPackage, runCommand, fetchurl, nodejs, makeWrapper }:
 let
-  version = "1.6.1";
+  version = "1.7.0";
 
   tarball = fetchurl {
     url = "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-${version}.tgz";
-    hash = "sha256-47DrVLbh6Vtg7HxCBJWb1prcUfsfDaOllDC7yaWTc08=";
+    hash = "sha256-ywMf85t10EJ5fXSAM5h92cDlZzczlxcsC07WYdC/SCQ=";
   };
 
   # Stage the unpacked tarball with the committed lockfile alongside it so
@@ -37,7 +37,7 @@ buildNpmPackage {
   pname = "pi-coding-agent";
   inherit version src;
 
-  npmDepsHash = "sha256-/l9vBU4vI/KzlZrZ1XyR3nKmOi2Pb131qE/JkkbET5I=";
+  npmDepsHash = "sha256-r/4jcF6JGX9+iBtsQEZFc8h11gqgDTFiqeuWyJ8tNco=";
 
   # Tarball ships dist/ already; nothing to compile.
   dontNpmBuild = true;
