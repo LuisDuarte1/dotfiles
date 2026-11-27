@@ -5,13 +5,20 @@ Description=Prometheus node exporter for %i (machine metrics for the local Prome
 # User= also sets ${HOME} for ExecStart; env runs the binary because the executable itself
 # cannot hold variables, which keeps the template free of any user's home path.
 User=%i
-ExecStart=/usr/bin/env ${HOME}/.nix-profile/bin/node_exporter --web.listen-address=127.0.0.1:9100
+# Every vmstat field brings the zswap and reclaim counters (zswpwb, allocstall, refaults); the
+# extra collectors add swap per device, zone watermarks, fragmentation, D-state tasks and units.
+ExecStart=/usr/bin/env ${HOME}/.nix-profile/bin/node_exporter --web.listen-address=127.0.0.1:9100 \
+  --collector.vmstat.fields=.* --collector.swap --collector.zoneinfo --collector.buddyinfo \
+  --collector.processes --collector.systemd
 Restart=on-failure
 # Last in line for the kernel OOM killer and skipped by systemd-oomd, so it records the crunches
 # it would otherwise die in; not -1000, so MemoryMax can still kill a runaway and restart it.
 OOMScoreAdjust=-999
 ManagedOOMPreference=omit
 MemoryMax=256M
+# Surviving the OOM killer is not enough: with memory.min at 0 its pages were swapped out and
+# every scrape stalled on the thrashing swap, so the last 70s before the lockup went unrecorded.
+MemoryMin=64M
 
 [Install]
 WantedBy=multi-user.target
