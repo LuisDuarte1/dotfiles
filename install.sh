@@ -198,6 +198,7 @@ ln -sf "$(pwd)/bin/ci-wait" ~/.local/bin/ci-wait
 mkdir -p ~/.config/systemd/user
 ln -sf "$(pwd)/systemd/pi-update.service" ~/.config/systemd/user/pi-update.service
 ln -sf "$(pwd)/systemd/pi-update.timer" ~/.config/systemd/user/pi-update.timer
+ln -sf "$(pwd)/systemd/agent.slice" ~/.config/systemd/user/agent.slice
 systemctl --user daemon-reload
 systemctl --user enable --now pi-update.timer
 

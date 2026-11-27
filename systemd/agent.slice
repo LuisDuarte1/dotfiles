@@ -1,0 +1,11 @@
+# The agent-slice pi extension moves pi here with everything it starts: agents yield CPU to
+# app.slice, reclaim their own memory past 20G, and oomd kills one pi tree, never a human app.
+[Unit]
+Description=Coding agents (pi and everything it starts)
+
+[Slice]
+CPUWeight=50
+MemoryHigh=20G
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=60%
+ManagedOOMSwap=kill
